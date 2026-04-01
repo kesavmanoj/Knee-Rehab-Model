@@ -16,14 +16,19 @@ static constexpr unsigned long kImuSampleIntervalMs = 5UL;          // 200 Hz
 static constexpr unsigned long kAnalogSampleIntervalMs = 5UL;       // 200 Hz
 static constexpr unsigned long kDashboardIntervalMs = 250UL;        // 4 Hz
 static constexpr unsigned long kOledUpdateIntervalMs = 500UL;       // 2 Hz
+static constexpr unsigned long kPotLogIntervalMs = 50UL;            // 20 Hz
+static constexpr unsigned long kCalibrationLogIntervalMs = 50UL;    // 20 Hz
+static constexpr unsigned long kCalibrationCaptureWindowMs = 3000UL;
 static constexpr unsigned long kBleRetryIntervalMs = 1000UL;        // reconnect pacing
 static constexpr unsigned long kBlePacketTimeoutMs = 1000UL;        // stale-data timeout
 
 // ADC and analog assumptions
 static constexpr float kAdcFullScale = 4095.0f;
 static constexpr float kAnalogReferenceVoltage = 3.30f;
-static constexpr size_t kAnalogMovingAverageWindow = 20;
+static constexpr size_t kAnalogMovingAverageWindow = 40;
 static constexpr float kPotMaxAngleDeg = 315.0f;
+static constexpr float kCalibrationMinAngleDeg = 0.0f;
+static constexpr float kCalibrationMaxAngleDeg = 145.0f;
 
 // OLED display
 static constexpr uint8_t kOledI2cAddress = 0x3C;
@@ -53,23 +58,24 @@ static constexpr float kRollGyroSign = 1.0f;
 //  - ADC samples the divider midpoint
 // If your circuit is wired differently, only the resistance formula needs to change.
 static constexpr bool kFlexSensorUsesHighSideDivider = true;
-static constexpr float kFlex1FixedResistorOhms = 10000.0f;
-static constexpr float kFlex2FixedResistorOhms = 10000.0f;
+static constexpr float kFlex1FixedResistorOhms = 33000.0f;
+static constexpr float kFlex2FixedResistorOhms = 33000.0f;
 
-// Placeholder 10-point resistance->angle calibration.
-// Replace with measured values from your actual sensors once you characterize them.
+// Starter 10-point resistance->angle calibration for a flex sensor that is
+// approximately 45k ohm when straight and 15k ohm when bent. The table must
+// stay ordered by increasing resistance for the interpolation code.
 static constexpr size_t kFlexCalibrationPointCount = 10;
 static constexpr FlexCalibrationPoint kFlexCalibrationTable[kFlexCalibrationPointCount] = {
-    {10000.0f, 0.0f},
-    {12000.0f, 10.0f},
-    {14500.0f, 20.0f},
-    {17500.0f, 30.0f},
-    {21000.0f, 45.0f},
-    {25500.0f, 60.0f},
-    {31000.0f, 75.0f},
-    {38000.0f, 95.0f},
-    {46000.0f, 115.0f},
-    {55000.0f, 135.0f},
+    {15000.0f, 145.0f},
+    {18000.0f, 130.0f},
+    {21000.0f, 115.0f},
+    {24000.0f, 100.0f},
+    {27000.0f, 85.0f},
+    {30000.0f, 70.0f},
+    {33000.0f, 55.0f},
+    {37000.0f, 40.0f},
+    {41000.0f, 20.0f},
+    {45000.0f, 0.0f},
 };
 
 }  // namespace MasterConfig

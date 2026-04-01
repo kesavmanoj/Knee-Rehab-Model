@@ -1,408 +1,192 @@
-# Real-Time Knee Joint Angle Measurement & Rehabilitation Assessment Using Sensor Fusion
+# Knee-Rehab-Model
 
-## Overview
-This project is a wearable knee rehabilitation monitoring system built around two **Seeed Studio XIAO MG24 Sense** boards. The current firmware establishes the full sensing pipeline needed before higher-level rehab analytics are added:
+Real-time knee rehabilitation measurement project using:
 
-- dual-node IMU sensing
-- BLE communication from shin node to thigh node
-- local analog sensing on the master node
-- zeroing / tare support
-- modular signal-processing blocks
-- a stable serial dashboard for debugging and validation
+- 2x Seeed Studio XIAO MG24 Sense boards
+- dual IMUs for thigh and shin segment orientation
+- BLE for inter-node communication
+- optional flex sensor and potentiometer analog channels
+- Python calibration and runtime-monitor GUIs
 
-The long-term goal is to support:
+This repository is organized into two main working areas:
 
-- real-time knee angle monitoring
-- peak flexion and extension lag metrics
-- repetition counting
-- exercise classification
-- future lightweight ML or CNN-based rehab assessment
+- [firmware/README.md](c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/README.md): Arduino firmware for the master and slave boards
+- [tools/README.md](c:/Users/KESAV/Downloads/Knee-Rehab-Model/tools/README.md): Python tools for calibration, plotting, coefficient generation, and live monitoring
 
-## Project Status
-Current implemented phases:
+## Project Goal
 
-- Phase 1: project architecture and modular file layout
-- Phase 2: slave firmware with IMU orientation + BLE notify
-- Phase 3: master firmware with BLE central, local IMU, flex sensor pipeline, potentiometer pipeline, moving average filtering, and zeroing
+The system is intended to measure knee flexion and extension in real time for rehabilitation monitoring. The long-term direction is to support:
 
-Not implemented yet:
+- live knee angle tracking
+- home-use rehab monitoring
+- calibration workflows for multiple sensor types
+- extension toward repetition counting, peak flexion, extension lag, and later analytics
 
-- Phase 4 fused knee-angle decision layer
-- Phase 5 rehab-oriented analytics and ML hooks
-
-## Hardware
-- 2x Seeed Studio XIAO MG24 Sense
-- built-in LSM6DS3TR-C IMU on each board
-- 2x flex sensors
-- 1x potentiometer
-- Arduino framework
-- ArduinoBLE library
-
-## Node Roles
+## Current Architecture
 
 ### Slave Node
-Mounted on the **distal / shin segment**.
 
-- acts as a BLE Peripheral
-- reads its built-in IMU
-- estimates segment orientation using a complementary filter
-- sends orientation packets to the master using BLE notifications
+The slave board is mounted on the shin segment.
+
+- reads its onboard IMU
+- computes orientation locally with a complementary filter
+- exposes orientation over BLE as a peripheral
 
 ### Master Node
-Mounted on the **proximal / thigh segment**.
 
-- acts as a BLE Central
-- reads its built-in IMU
-- reads two flex sensors
-- reads one potentiometer
-- receives shin IMU telemetry from the slave
-- calculates candidate knee-angle sources for later fusion
+The master board is mounted on the thigh segment.
 
-## Pin Assignments
-This is the most important wiring table for the current firmware.
+- reads its onboard IMU
+- connects to the slave over BLE as a central
+- receives the slave IMU angle
+- reads analog sensors such as:
+  - flex sensor on `D0`
+  - potentiometer on `D2`
+- drives the SSD1306 OLED display
+- streams serial records that the Python tools consume
 
-### Master Node Pin Map
-These assignments are defined in [firmware/master_node/AppConfig.h](/c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/master_node/AppConfig.h).
+## Current Working Modes
 
-| Signal | Current firmware pin | XIAO pad label | Notes |
-|---|---|---|---|
-| Flex Sensor 1 analog input | `D0` | `A0 / D0` | 12-bit ADC input |
-| Flex Sensor 2 analog input | `D1` | `A1 / D1` | 12-bit ADC input |
-| Potentiometer analog input | `D2` | `A2 / D2` | 12-bit ADC input |
-| Built-in IMU | internal | LSM6DS3TR-C | no external wiring needed |
-| USB serial | USB-C | onboard | used for dashboard and commands |
-| BLE | internal radio | onboard | used to connect to slave |
+The master firmware currently supports a unified serial stream. One flashed sketch can serve:
 
-### Slave Node Pin Map
-The slave currently uses no external analog pins.
+- the live runtime monitor
+- the flex calibration GUI
+- the potentiometer calibration GUI
+- the dual-IMU calibration GUI
 
-| Signal | Current firmware pin | Notes |
-|---|---|---|
-| Built-in IMU | internal | LSM6DS3TR-C |
-| USB serial | USB-C | debug output and zero command |
-| BLE notify | internal radio | sends shin orientation |
+The board emits machine-readable serial records such as:
 
-### Important Pin Notes
-- On the Silicon Labs XIAO MG24 Arduino core, analog-capable pins are referenced as `D0`, `D1`, `D2`, etc.
-- In hardware documentation these may also appear as `A0/D0`, `A1/D1`, `A2/D2`.
-- The current firmware uses `D0`, `D1`, and `D2` because that matches the installed board core.
-- If your final wiring changes, only update the constants in [firmware/master_node/AppConfig.h](/c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/master_node/AppConfig.h).
+- `RUNTIME_SAMPLE,...`
+- `FLEX_SAMPLE,...`
+- `POT_SAMPLE,...`
+- `IMU_SAMPLE,...`
+- `LABEL_START,...`
+- `LABEL_END,...`
 
-## Sensor Wiring Assumptions
+Each Python GUI listens only to the records it cares about and ignores the rest.
 
-### Flex Sensors
-The current code assumes each flex sensor is part of a voltage divider:
+## Quick Start
 
-- flex sensor connected on the **high side** to `3.3V`
-- fixed resistor connected on the **low side** to `GND`
-- ADC pin reads the midpoint voltage
+### 1. Flash the boards
 
-Current fixed resistor assumptions:
+- Slave firmware: [slave_node.ino](c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/slave_node/slave_node.ino)
+- Master firmware: [master_node.ino](c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/master_node/master_node.ino)
 
-- Flex 1 fixed resistor: `10,000 ohms`
-- Flex 2 fixed resistor: `10,000 ohms`
+### 2. Install Python dependencies
 
-If your divider is wired the opposite way, update:
+Typical packages used by the tools:
 
-- `kFlexSensorUsesHighSideDivider`
+```bash
+pip install pyserial matplotlib numpy
+```
 
-in [firmware/master_node/AppConfig.h](/c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/master_node/AppConfig.h).
+`tkinter` is expected from the standard Windows Python install.
 
-### Potentiometer
-The potentiometer is assumed to be read as a standard analog voltage:
+### 3. Launch the tool you need
 
-- one end to `3.3V`
-- one end to `GND`
-- wiper to `D2`
+- POT calibration: [launch_pot_calibration_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launch_pot_calibration_gui.bat)
+- Flex calibration: [launch_flex_calibration_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launch_flex_calibration_gui.bat)
+- IMU calibration: [launch_imu_calibration_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launch_imu_calibration_gui.bat)
+- Runtime monitor: [launch_runtime_monitor_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launch_runtime_monitor_gui.bat)
 
-The code maps ADC linearly to `0..315 degrees`.
+### 4. Regenerate runtime calibration after POT or flex recalibration
 
-## Current Signal Processing Design
+Run:
 
-### IMU Processing
-Both nodes use:
+- [generate_runtime_calibration.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/generate_runtime_calibration.bat)
 
-- accelerometer + gyroscope complementary filtering
-- lightweight angle estimation suitable for MG24 real-time use
-- primary axis selection via config
-- sign correction terms for mounting adjustment
+This updates:
 
-Current IMU settings:
+- [GeneratedCalibration.h](c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/master_node/GeneratedCalibration.h)
+- [generated_runtime_calibration_summary.txt](c:/Users/KESAV/Downloads/Knee-Rehab-Model/calibration_sessions/generated_runtime_calibration_summary.txt)
 
-- sample period: `10 ms` (`100 Hz`)
-- complementary filter alpha: `0.98`
-
-### Flex Sensor Processing
-Each flex channel currently uses:
-
-1. `analogRead()` at 12-bit resolution
-2. moving average filtering with window size `20`
-3. ADC to voltage conversion using divisor `4095.0`
-4. voltage-divider resistance calculation
-5. 10-point piecewise linear interpolation from resistance to angle
+Then re-upload the master sketch.
 
 Important:
 
-- the code correctly uses `4095.0`, never `1023`
-- the calibration table is still a **placeholder table**
-- you should replace it with real measured resistance-angle points from your sensors
+- POT uses a generated linear mapping from raw ADC to angle
+- Flex uses a generated quadratic mapping from raw ADC to angle
+- IMU currently uses the measured dual-IMU angle directly at runtime, with no runtime calibration fit applied
 
-### Potentiometer Processing
-The potentiometer path uses:
+## Wiring Summary
 
-1. `analogRead()` at 12-bit resolution
-2. moving average filtering with window size `20`
-3. linear mapping from ADC to `0..315 degrees`
+### Master analog inputs
 
-### Zeroing
-The system supports user-triggered zeroing through serial commands.
+- Flex sensor input: `D0`
+- Potentiometer input: `D2`
 
-When zeroing is triggered in full extension, the master stores offsets for:
+### OLED
 
-- master IMU
-- slave IMU
-- flex sensor 1 angle
-- flex sensor 2 angle
-- potentiometer angle
+The OLED is an SSD1306 `128x64` I2C display and is driven by the master firmware.
 
-All displayed angles are then reported relative to that zero reference.
+### Flex divider assumption
 
-## BLE Architecture
+The firmware assumes:
 
-### Slave BLE Behavior
-- advertises as `KneeSlaveShin`
-- exposes a custom telemetry service
-- exposes a notify characteristic carrying orientation data
+- flex sensor on the high side to `3V3`
+- fixed resistor on the low side to `GND`
+- ADC node in the middle
 
-### Master BLE Behavior
-- scans for the slave service UUID
-- connects as BLE central
-- discovers the notify characteristic
-- subscribes to notifications
-- handles disconnect and reconnect automatically
-
-### Shared BLE Packet
-The packet format is defined in:
-
-- [firmware/common/BleProtocol.h](/c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/common/BleProtocol.h)
-
-Fields currently included:
-
-- protocol version
-- flags
-- sequence number
-- slave uptime
-- zeroed primary segment angle
-- fused pitch
-- fused roll
-- accelerometer pitch
-
-## Knee Angle Strategy
-The intended knee-angle approach for this system is:
-
-1. estimate each segment angle relative to gravity
-2. select the axis aligned with sagittal-plane knee motion
-3. subtract thigh angle from shin angle
-4. compare this IMU-derived angle against flex and potentiometer channels
-5. later add a simple explainable fusion rule
-
-In practical terms:
-
-- `knee_angle ~= shin_segment_angle - thigh_segment_angle`
-
-This works well when:
-
-- both boards are mounted consistently
-- the movement is mainly flexion/extension
-- the primary axis and signs are tuned correctly
-
-Known limitations:
-
-- complementary filtering does not solve yaw
-- accelerometer readings are disturbed during fast dynamic motion
-- board mounting and soft tissue motion can introduce error
-
-## Firmware Structure
+Example:
 
 ```text
-firmware/
-├── common/
-│   └── BleProtocol.h
-├── master_node/
-│   ├── master_node.ino
-│   ├── AppConfig.h
-│   ├── AnalogChannel.h/.cpp
-│   ├── MovingAverageFilter.h
-│   ├── FlexSensorModel.h/.cpp
-│   ├── PotentiometerModel.h/.cpp
-│   ├── ImuManager.h/.cpp
-│   ├── ComplementaryFilter.h/.cpp
-│   ├── SegmentOrientationEstimator.h/.cpp
-│   ├── BleCentralManager.h/.cpp
-│   └── BleProtocol.h
-└── slave_node/
-    ├── slave_node.ino
-    ├── AppConfig.h
-    ├── ImuManager.h/.cpp
-    ├── ComplementaryFilter.h/.cpp
-    ├── BlePeripheralManager.h/.cpp
-    └── BleProtocol.h
+3V3 ---- Flex Sensor ----+---- D0
+                         |
+                       33k ohm
+                         |
+                        GND
 ```
 
-### Master Module Responsibilities
-- `master_node.ino`: main loop, scheduling, dashboard, serial commands, zeroing
-- `AppConfig.h`: all tunable constants and pin assignments
-- `AnalogChannel`: filtered ADC sampling wrapper
-- `MovingAverageFilter`: reusable windowed averaging filter
-- `FlexSensorModel`: flex voltage, resistance, interpolation, and angle
-- `PotentiometerModel`: filtered ADC to angle conversion
-- `ImuManager`: low-level local IMU reads
-- `ComplementaryFilter`: 1-axis IMU fusion helper
-- `SegmentOrientationEstimator`: thigh orientation estimation
-- `BleCentralManager`: slave discovery, connect, subscribe, packet reception
+### Potentiometer
 
-### Slave Module Responsibilities
-- `slave_node.ino`: main loop, scheduling, zeroing, debug output
-- `AppConfig.h`: slave timing and IMU config
-- `ImuManager`: low-level shin IMU reads
-- `ComplementaryFilter`: IMU fusion helper
-- `BlePeripheralManager`: BLE peripheral service, notify, reconnect advertising
+```text
+3V3 ----[ pot track ]---- GND
+              |
+            wiper
+              |
+              D2
+```
 
-## Serial Commands
+## Repo Layout
 
-### Slave Commands
-- `z`: zero current slave IMU primary axis
-- `r`: clear slave IMU zero offset
-- `h`: print help
+```text
+Knee-Rehab-Model/
+├── firmware/
+├── tools/
+├── calibration_sessions/
+├── knee_visualizer.py
+├── generate_runtime_calibration.bat
+├── launch_flex_calibration_gui.bat
+├── launch_imu_calibration_gui.bat
+├── launch_pot_calibration_gui.bat
+└── launch_runtime_monitor_gui.bat
+```
 
-### Master Commands
-- `z`: zero all currently observed channels
-- `r`: clear all zero offsets
-- `h`: print help
+## Notes
 
-## Serial Dashboard
-The master prints a fixed-width dashboard intended to stay visually stable in Serial Monitor.
+- The OLED view is for embedded live feedback on the master node.
+- The Python GUIs are the main workflow for calibration and live visualization on a PC.
+- `calibration_sessions/` stores captured calibration logs and generated plots.
+- `calibration_output/` can be used for extra exported analysis artifacts if needed later.
 
-Typical fields include:
+## Recommended Workflow
 
-- IMU relative angle
-- zeroed thigh angle
-- zeroed shin angle
-- flex 1 angle
-- flex 2 angle
-- potentiometer angle
-- raw ADC values
-- flex resistances
-- BLE state
-- packet age / sequence
+1. Flash the slave.
+2. Flash the master.
+3. Verify the master OLED shows:
+   - master IMU
+   - slave IMU
+   - knee angle
+   - BLE state
+4. Calibrate POT if needed.
+5. Calibrate flex if needed.
+6. Regenerate runtime calibration.
+7. Re-upload the master.
+8. Use the runtime monitor GUI for live flex, pot, and IMU tracking.
 
-This makes it easier to debug:
+## Documentation Map
 
-- wiring problems
-- reversed sensor directions
-- noisy analog signals
-- stale BLE packets
-- poor zeroing conditions
+For details, use:
 
-## Build and Upload
-
-### Required Arduino IDE Setup
-- Arduino IDE 2.x
-- Silicon Labs Arduino core
-- board selected as `Seeed Studio XIAO MG24`
-- `Tools > Protocol stack` set to `BLE (Arduino)`
-- libraries installed:
-  - `ArduinoBLE`
-  - `LSM6DS3`
-
-### Upload Order
-1. Upload [firmware/slave_node/slave_node.ino](/c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/slave_node/slave_node.ino) to the shin node
-2. Upload [firmware/master_node/master_node.ino](/c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/master_node/master_node.ino) to the thigh node
-3. Open both serial monitors at `115200`
-4. Confirm the master transitions from `SCAN` to `LIVE`
-
-## Initial Bring-Up Checklist
-1. Power both boards.
-2. Confirm the slave prints orientation debug lines.
-3. Confirm the master reports `BLE:LIVE`.
-4. Move the shin board and watch the `SHIN` field.
-5. Move the thigh board and watch the `THIGH` field.
-6. Check that `IMU_REL` changes as expected when the boards rotate relative to each other.
-7. Confirm `ADC1`, `ADC2`, and `POT` respond when analog sensors are connected.
-8. Place the leg in full extension and send `z` from the master.
-
-## Calibration Notes
-
-### IMU Axis Tuning
-If the wrong orientation axis responds to flexion/extension:
-
-- change `kUsePitchAsPrimaryAxis`
-
-If the sign is inverted:
-
-- change `kPitchSign`
-- change `kRollSign`
-- if needed, also update `kPitchGyroSign` and `kRollGyroSign`
-
-These are defined in:
-
-- [firmware/master_node/AppConfig.h](/c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/master_node/AppConfig.h)
-- [firmware/slave_node/AppConfig.h](/c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/slave_node/AppConfig.h)
-
-### Flex Sensor Calibration
-The current 10-point flex calibration table is only a starting placeholder.
-
-For better results:
-
-1. measure sensor resistance at known bend angles
-2. replace the 10 table entries with your own values
-3. keep points ordered by increasing resistance
-
-### Potentiometer Calibration
-The current potentiometer model is a simple linear map from:
-
-- `0 ADC` -> `0 deg`
-- `4095 ADC` -> `315 deg`
-
-If your mechanical mounting does not use the full travel, you may later want:
-
-- minimum ADC calibration
-- maximum ADC calibration
-- deadband or endpoint clamping
-
-## Current Assumptions and Open Items
-- master analog pins are currently `D0`, `D1`, `D2`
-- flex divider assumes high-side flex sensor wiring
-- flex calibration table is placeholder data
-- IMU axis selection may need to be switched from pitch to roll depending on mounting
-- the current code computes candidate angles but does not yet implement final fusion weighting
-
-## Planned Next Steps
-- Phase 4: simple, explainable fused knee-angle logic
-- Phase 5: rehab metric hooks such as:
-  - peak flexion tracking
-  - extension lag tracking
-  - repetition counting
-  - exercise classification
-  - future windowed feature extraction for ML
-
-## Quick Reference
-
-### Current Master Pins
-- Flex 1: `D0`
-- Flex 2: `D1`
-- Potentiometer: `D2`
-
-### Current Key Constants
-- ADC divisor: `4095.0`
-- moving average window: `20`
-- potentiometer range: `0..315 deg`
-- complementary filter alpha: `0.98`
-- IMU sampling: `100 Hz`
-
-## Authoring Note
-This README reflects the current firmware state in this repository. If you change wiring or calibration later, update:
-
-- [firmware/master_node/AppConfig.h](/c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/master_node/AppConfig.h)
-- this `README.md`
-
+- [firmware/README.md](c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/README.md)
+- [tools/README.md](c:/Users/KESAV/Downloads/Knee-Rehab-Model/tools/README.md)
