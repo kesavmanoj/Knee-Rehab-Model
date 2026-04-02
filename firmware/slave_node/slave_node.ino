@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
+#include <core_cm33.h>
 
 #include "BleProtocol.h"
 #include "AppConfig.h"
@@ -25,6 +26,9 @@ uint32_t lastImuSampleMs = 0;
 uint32_t lastBleNotifyMs = 0;
 uint32_t lastSerialDebugMs = 0;
 uint32_t lastUpdateMicros = 0;
+uint32_t recoveryStartedMs = 0;
+uint32_t connectedSinceMs = 0;
+bool lastBleConnected = false;
 
 bool imuHealthy = false;
 bool zeroApplied = false;
@@ -54,6 +58,13 @@ void printHelp() {
   Serial.println(F("  z -> zero current primary IMU angle"));
   Serial.println(F("  r -> reset zero offset"));
   Serial.println(F("  h -> show help"));
+}
+
+void resetBoard() {
+  Serial.println(F("Slave watchdog reset."));
+  Serial.flush();
+  delay(50);
+  NVIC_SystemReset();
 }
 
 void handleSerialCommands() {
@@ -146,6 +157,46 @@ void printDebugLine() {
   Serial.println(buffer);
 }
 
+void updateConnectionWatchdog(uint32_t nowMs) {
+  const bool connected = bleManager.isConnected();
+  if (connected) {
+    if (!lastBleConnected) {
+      connectedSinceMs = nowMs;
+      lastBleConnected = true;
+      Serial.println(F("Slave reconnected, stability check running."));
+    }
+
+    if (recoveryStartedMs != 0UL &&
+        (nowMs - connectedSinceMs) >= SlaveConfig::kConnectionStableTimeMs) {
+      Serial.println(F("Slave connection considered stable, watchdog cleared."));
+      recoveryStartedMs = 0UL;
+    }
+
+    lastBleConnected = true;
+    return;
+  }
+
+  if (lastBleConnected) {
+    if (recoveryStartedMs == 0UL) {
+      recoveryStartedMs = nowMs;
+    }
+    connectedSinceMs = 0UL;
+    lastBleConnected = false;
+    Serial.println(F("Slave disconnected from master, recovery watchdog armed."));
+    return;
+  }
+
+  if (recoveryStartedMs == 0UL) {
+    recoveryStartedMs = nowMs;
+    return;
+  }
+
+  if ((nowMs - recoveryStartedMs) >= SlaveConfig::kConnectionResetTimeoutMs) {
+    Serial.println(F("Slave failed to recover a stable connection in time."));
+    resetBoard();
+  }
+}
+
 }  // namespace
 
 void setup() {
@@ -185,6 +236,7 @@ void loop() {
   const uint32_t nowMs = millis();
 
   bleManager.poll();
+  updateConnectionWatchdog(nowMs);
   handleSerialCommands();
 
   if (nowMs - lastImuSampleMs >= SlaveConfig::kImuSampleIntervalMs) {

@@ -14,14 +14,16 @@ static constexpr unsigned long kSerialBaud = 115200UL;
 // Scheduling
 static constexpr unsigned long kImuSampleIntervalMs = 5UL;          // 200 Hz
 static constexpr unsigned long kAnalogSampleIntervalMs = 5UL;       // 200 Hz
-static constexpr unsigned long kDashboardIntervalMs = 250UL;        // 4 Hz
+static constexpr unsigned long kDashboardIntervalMs = 500UL;        // 2 Hz
 static constexpr unsigned long kOledUpdateIntervalMs = 500UL;       // 2 Hz
 static constexpr unsigned long kPotLogIntervalMs = 50UL;            // 20 Hz
 static constexpr unsigned long kCalibrationLogIntervalMs = 50UL;    // 20 Hz
 static constexpr unsigned long kCalibrationCaptureWindowMs = 3000UL;
 static constexpr unsigned long kBleRetryIntervalMs = 1000UL;        // reconnect pacing
 static constexpr unsigned long kBlePacketTimeoutMs = 1000UL;        // stale-data timeout
-static constexpr unsigned long kPhoneTelemetryIntervalMs = 250UL;   // app-side polling cadence
+static constexpr unsigned long kPhoneTelemetryIntervalMs = 500UL;   // lower phone BLE load for dual-role stability
+static constexpr unsigned long kConnectionStableTimeMs = 2000UL;    // require a continuously healthy slave link before clearing recovery
+static constexpr unsigned long kConnectionResetTimeoutMs = 6000UL;  // reboot if the slave link never becomes stable
 
 // ADC and analog assumptions
 static constexpr float kAdcFullScale = 4095.0f;

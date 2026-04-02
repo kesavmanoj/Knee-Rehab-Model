@@ -1,15 +1,12 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <math.h>
-#include <stdlib.h>
 #include <string.h>
+#include <core_cm33.h>
 
 #include "AppConfig.h"
 #include "BleCentralManager.h"
-#include "CalibratedAngleModels.h"
-#include "CalibrationSession.h"
 #include "FlexSensorModel.h"
-#include "GeneratedCalibration.h"
 #include "OledDisplayManager.h"
 #include "PhoneBlePeripheralManager.h"
 #include "PhoneBleProtocol.h"
@@ -24,15 +21,16 @@ struct ZeroReferences {
   bool applied;
 };
 
-struct AlignedImuPair {
-  float masterRawDeg;
-  float slaveRawDeg;
-  uint16_t slaveSequence;
-  uint32_t capturedAtMs;
-  bool valid;
+struct RuntimeSnapshot {
+  float masterImuDeg;
+  float slaveImuDeg;
+  float kneeImuDeg;
+  uint16_t flexRawAdc;
+  float flexAngleDeg;
+  uint16_t potRawAdc;
+  float potAngleDeg;
 };
 
-CalibrationSession calibrationSession;
 SegmentOrientationEstimator thighImu;
 BleCentralManager bleCentral;
 OledDisplayManager oledDisplay;
@@ -44,17 +42,19 @@ FlexSensorModel flexSensor(MasterConfig::kFlex1Pin,
 PotentiometerModel potSensor(MasterConfig::kPotPin);
 
 ZeroReferences zeroReferences{0.0f, 0.0f, false};
-AlignedImuPair alignedImuPair{0.0f, 0.0f, 0U, 0UL, false};
 
 char serialCommandBuffer[24] = {};
 size_t serialCommandLength = 0;
 
-uint32_t lastAnalogSampleMs = 0;
 uint32_t lastImuSampleMs = 0;
-uint32_t lastRuntimeLogMs = 0;
+uint32_t lastAnalogSampleMs = 0;
+uint32_t lastDashboardMs = 0;
 uint32_t lastOledUpdateMs = 0;
 uint32_t lastPhoneTelemetryMs = 0;
 uint16_t phoneTelemetrySequence = 0;
+uint32_t recoveryStartedMs = 0;
+uint32_t connectedSinceMs = 0;
+bool lastSlaveLinkHealthy = false;
 
 float wrapAngle180(float angleDeg) {
   while (angleDeg > 180.0f) {
@@ -66,29 +66,11 @@ float wrapAngle180(float angleDeg) {
   return angleDeg;
 }
 
-void latchAlignedImuPair() {
-  if (!bleCentral.hasPacket()) {
-    return;
-  }
-
-  alignedImuPair.masterRawDeg = thighImu.primaryAngleDeg();
-  alignedImuPair.slaveRawDeg = bleCentral.latestPacket().segmentAngleDeg;
-  alignedImuPair.slaveSequence = bleCentral.latestPacket().sequence;
-  alignedImuPair.capturedAtMs = millis();
-  alignedImuPair.valid = true;
-}
-
 float masterImuRawDeg() {
-  if (alignedImuPair.valid) {
-    return alignedImuPair.masterRawDeg;
-  }
   return thighImu.primaryAngleDeg();
 }
 
 float slaveImuRawDeg() {
-  if (alignedImuPair.valid) {
-    return alignedImuPair.slaveRawDeg;
-  }
   return bleCentral.hasPacket() ? bleCentral.latestPacket().segmentAngleDeg : 0.0f;
 }
 
@@ -100,48 +82,95 @@ float slaveImuZeroedDeg() {
   return slaveImuRawDeg() - zeroReferences.slaveImuDeg;
 }
 
-float kneeAngleDeg() {
+float kneeImuDeg() {
   return fabsf(wrapAngle180(slaveImuZeroedDeg() - masterImuZeroedDeg()));
 }
 
-float calibratedImuAngleDeg() {
-  return CalibratedAngleModels::imuAngleFromRawKneeAngle(kneeAngleDeg());
+RuntimeSnapshot makeSnapshot() {
+  const FlexSensorReading& flex = flexSensor.reading();
+  const PotentiometerReading& pot = potSensor.reading();
+
+  RuntimeSnapshot snapshot{};
+  snapshot.masterImuDeg = masterImuZeroedDeg();
+  snapshot.slaveImuDeg = slaveImuZeroedDeg();
+  snapshot.kneeImuDeg = kneeImuDeg();
+  snapshot.flexRawAdc = flex.rawAdc;
+  snapshot.flexAngleDeg = flex.angleDeg;
+  snapshot.potRawAdc = pot.rawAdc;
+  snapshot.potAngleDeg = pot.angleDeg;
+  return snapshot;
 }
 
 void printHeader() {
   Serial.println();
-  Serial.println(F("# Unified FLEX + POT monitor"));
-  Serial.print(F("# FLEX source session: "));
-  Serial.println(GeneratedCalibration::kFlexSourceSession);
-  Serial.print(F("# POT source session: "));
-  Serial.println(GeneratedCalibration::kPotSourceSession);
-  Serial.println(F("# Output formats:"));
-  Serial.println(F("#   RUNTIME_SAMPLE,time_ms,flex_raw_adc,flex_angle_deg,pot_raw_adc,pot_angle_deg,master_imu_deg,slave_imu_deg,imu_angle_deg"));
-  Serial.println(F("#   FLEX_SAMPLE,time_ms,flex_raw_adc,flex_filtered_adc,flex_voltage,flex_resistance_ohms,flex_angle_deg,label_deg"));
-  Serial.println(F("#   POT_SAMPLE,time_ms,pot_raw_adc,pot_filtered_adc,pot_voltage,pot_angle_deg,label_deg"));
-  Serial.println(F("#   IMU_SAMPLE,time_ms,master_imu_deg,slave_imu_deg,imu_raw_knee_angle_deg,imu_angle_deg,label_deg"));
-  Serial.println(F("# Phone BLE:"));
-  Serial.print(F("#   Device Name: "));
+  Serial.println(F("# Simple master baseline"));
+  Serial.println(F("# Features: local IMU, slave BLE link, flex D0, pot D2, phone BLE"));
+  Serial.print(F("# Phone device name: "));
   Serial.println(MasterConfig::kPhoneBleDeviceName);
-  Serial.print(F("#   Service UUID: "));
+  Serial.print(F("# Phone service UUID: "));
   Serial.println(KneePhoneBle::kPhoneServiceUuid);
-  Serial.println(F("#   LABEL_START,time_ms,label_deg,window_ms"));
-  Serial.println(F("#   LABEL_END,time_ms,label_deg"));
-  Serial.println(F("# Commands: h, z, r, or numeric angle 0..145"));
+  Serial.println(F("# Commands: h, z, r, x/reset"));
+  Serial.println(F("# Output: SIMPLE,time_ms,master_imu_deg,slave_imu_deg,knee_imu_deg,flex_raw_adc,flex_angle_deg,pot_raw_adc,pot_angle_deg,ble_state"));
 }
 
-void captureImuZeroReference() {
+void captureZeroReference() {
   zeroReferences.masterImuDeg = masterImuRawDeg();
   zeroReferences.slaveImuDeg = slaveImuRawDeg();
   zeroReferences.applied = true;
-  Serial.println(F("# IMU zero reference captured."));
+  Serial.println(F("# Zero reference captured."));
 }
 
-void clearImuZeroReference() {
+void clearZeroReference() {
   zeroReferences.masterImuDeg = 0.0f;
   zeroReferences.slaveImuDeg = 0.0f;
   zeroReferences.applied = false;
-  Serial.println(F("# IMU zero reference cleared."));
+  Serial.println(F("# Zero reference cleared."));
+}
+
+void resetBoard() {
+  Serial.println(F("# Resetting board..."));
+  Serial.flush();
+  delay(50);
+  NVIC_SystemReset();
+}
+
+void updateConnectionWatchdog(uint32_t nowMs) {
+  const bool linkHealthy = bleCentral.hasFreshPacket();
+  if (linkHealthy) {
+    if (!lastSlaveLinkHealthy) {
+      connectedSinceMs = nowMs;
+      lastSlaveLinkHealthy = true;
+      Serial.println(F("# Master reconnected to slave, stability check running."));
+    }
+
+    if (recoveryStartedMs != 0UL &&
+        (nowMs - connectedSinceMs) >= MasterConfig::kConnectionStableTimeMs) {
+      Serial.println(F("# Master-slave link considered stable, watchdog cleared."));
+      recoveryStartedMs = 0UL;
+    }
+
+    return;
+  }
+
+  if (lastSlaveLinkHealthy) {
+    if (recoveryStartedMs == 0UL) {
+      recoveryStartedMs = nowMs;
+    }
+    connectedSinceMs = 0UL;
+    lastSlaveLinkHealthy = false;
+    Serial.println(F("# Master lost slave link, recovery watchdog armed."));
+    return;
+  }
+
+  if (recoveryStartedMs == 0UL) {
+    recoveryStartedMs = nowMs;
+    return;
+  }
+
+  if ((nowMs - recoveryStartedMs) >= MasterConfig::kConnectionResetTimeoutMs) {
+    Serial.println(F("# Master failed to recover a stable slave link in time."));
+    resetBoard();
+  }
 }
 
 void handleCommand(const char* command) {
@@ -151,42 +180,22 @@ void handleCommand(const char* command) {
   }
 
   if (strcmp(command, "z") == 0 || strcmp(command, "Z") == 0) {
-    captureImuZeroReference();
+    captureZeroReference();
     return;
   }
 
   if (strcmp(command, "r") == 0 || strcmp(command, "R") == 0) {
-    clearImuZeroReference();
+    clearZeroReference();
     return;
   }
 
-  char* parseEnd = nullptr;
-  const float labelDeg = strtof(command, &parseEnd);
-  if (parseEnd == command || *parseEnd != '\0') {
-    Serial.println(F("# Ignored command. Enter h, z, r, or a numeric angle 0..145."));
+  if (strcmp(command, "x") == 0 || strcmp(command, "X") == 0 ||
+      strcmp(command, "reset") == 0 || strcmp(command, "RESET") == 0) {
+    resetBoard();
     return;
   }
 
-  if (labelDeg < MasterConfig::kCalibrationMinAngleDeg || labelDeg > MasterConfig::kCalibrationMaxAngleDeg) {
-    Serial.println(F("# Angle out of range. Enter a value between 0 and 145."));
-    return;
-  }
-
-  const uint32_t nowMs = millis();
-  if (calibrationSession.isActive()) {
-    Serial.print(F("LABEL_END,"));
-    Serial.print(nowMs);
-    Serial.print(F(","));
-    Serial.println(calibrationSession.activeLabelDeg(), 1);
-  }
-
-  calibrationSession.beginLabel(labelDeg, MasterConfig::kCalibrationCaptureWindowMs, nowMs);
-  Serial.print(F("LABEL_START,"));
-  Serial.print(nowMs);
-  Serial.print(F(","));
-  Serial.print(labelDeg, 1);
-  Serial.print(F(","));
-  Serial.println(MasterConfig::kCalibrationCaptureWindowMs);
+  Serial.println(F("# Ignored command. Use h, z, r, or x/reset."));
 }
 
 void handleSerialCommands() {
@@ -207,123 +216,6 @@ void handleSerialCommands() {
   }
 }
 
-void updateCalibrationSession() {
-  const bool wasActive = calibrationSession.isActive();
-  const float completedLabelDeg = calibrationSession.activeLabelDeg();
-  calibrationSession.update(millis());
-  if (wasActive && !calibrationSession.isActive()) {
-    Serial.print(F("LABEL_END,"));
-    Serial.print(millis());
-    Serial.print(F(","));
-    Serial.println(completedLabelDeg, 1);
-  }
-}
-
-float activeLabelDegOrNan() {
-  return calibrationSession.isActive() ? calibrationSession.activeLabelDeg() : NAN;
-}
-
-void printRuntimeSample() {
-  const auto& flex = flexSensor.reading();
-  const auto& pot = potSensor.reading();
-  const float flexAngleDeg = CalibratedAngleModels::flexAngleFromRawAdc(flex.rawAdc);
-  const float potAngleDeg = CalibratedAngleModels::potAngleFromRawAdc(pot.rawAdc);
-  const float masterImuDeg = masterImuZeroedDeg();
-  const float slaveImuDeg = slaveImuZeroedDeg();
-  const float imuAngleDeg = calibratedImuAngleDeg();
-
-  Serial.print(F("RUNTIME_SAMPLE,"));
-  Serial.print(millis());
-  Serial.print(F(","));
-  Serial.print(flex.rawAdc);
-  Serial.print(F(","));
-  Serial.print(flexAngleDeg, 2);
-  Serial.print(F(","));
-  Serial.print(pot.rawAdc);
-  Serial.print(F(","));
-  Serial.print(potAngleDeg, 2);
-  Serial.print(F(","));
-  Serial.print(masterImuDeg, 2);
-  Serial.print(F(","));
-  Serial.print(slaveImuDeg, 2);
-  Serial.print(F(","));
-  Serial.println(imuAngleDeg, 2);
-}
-
-void printFlexSample() {
-  const auto& flex = flexSensor.reading();
-  const float flexAngleDeg = CalibratedAngleModels::flexAngleFromRawAdc(flex.rawAdc);
-
-  Serial.print(F("FLEX_SAMPLE,"));
-  Serial.print(millis());
-  Serial.print(F(","));
-  Serial.print(flex.rawAdc);
-  Serial.print(F(","));
-  Serial.print(flex.filteredAdc, 2);
-  Serial.print(F(","));
-  Serial.print(flex.voltage, 4);
-  Serial.print(F(","));
-  if (flex.valid) {
-    Serial.print(flex.resistanceOhms, 2);
-  } else {
-    Serial.print(F("nan"));
-  }
-  Serial.print(F(","));
-  Serial.print(flexAngleDeg, 2);
-  Serial.print(F(","));
-  if (calibrationSession.isActive()) {
-    Serial.println(activeLabelDegOrNan(), 1);
-  } else {
-    Serial.println(F("nan"));
-  }
-}
-
-void printPotSample() {
-  const auto& pot = potSensor.reading();
-  const float potAngleDeg = CalibratedAngleModels::potAngleFromRawAdc(pot.rawAdc);
-
-  Serial.print(F("POT_SAMPLE,"));
-  Serial.print(millis());
-  Serial.print(F(","));
-  Serial.print(pot.rawAdc);
-  Serial.print(F(","));
-  Serial.print(pot.filteredAdc, 2);
-  Serial.print(F(","));
-  Serial.print(pot.voltage, 4);
-  Serial.print(F(","));
-  Serial.print(potAngleDeg, 2);
-  Serial.print(F(","));
-  if (calibrationSession.isActive()) {
-    Serial.println(activeLabelDegOrNan(), 1);
-  } else {
-    Serial.println(F("nan"));
-  }
-}
-
-void printImuSample() {
-  const float masterImuDeg = masterImuZeroedDeg();
-  const float slaveImuDeg = slaveImuZeroedDeg();
-  const float imuRawKneeAngleDeg = kneeAngleDeg();
-  const float imuAngleDeg = calibratedImuAngleDeg();
-
-  Serial.print(F("IMU_SAMPLE,"));
-  Serial.print(millis());
-  Serial.print(F(","));
-  Serial.print(masterImuDeg, 2);
-  Serial.print(F(","));
-  Serial.print(slaveImuDeg, 2);
-  Serial.print(F(","));
-  Serial.print(imuRawKneeAngleDeg, 2);
-  Serial.print(F(","));
-  Serial.print(imuAngleDeg, 2);
-  Serial.print(F(","));
-  if (calibrationSession.isActive()) {
-    Serial.println(activeLabelDegOrNan(), 1);
-  } else {
-    Serial.println(F("nan"));
-  }
-}
-
 void handlePhoneCommands() {
   if (!phoneBle.hasPendingCommand()) {
     return;
@@ -332,10 +224,10 @@ void handlePhoneCommands() {
   const KneePhoneBle::CommandPacketV1 command = phoneBle.consumePendingCommand();
   switch (command.commandId) {
     case KneePhoneBle::kCmdZeroImu:
-      captureImuZeroReference();
+      captureZeroReference();
       break;
     case KneePhoneBle::kCmdClearZero:
-      clearImuZeroReference();
+      clearZeroReference();
       break;
     default:
       Serial.println(F("# Ignored phone command."));
@@ -343,10 +235,28 @@ void handlePhoneCommands() {
   }
 }
 
-KneePhoneBle::TelemetryPacketV1 makePhoneTelemetryPacket() {
-  const auto& flex = flexSensor.reading();
-  const auto& pot = potSensor.reading();
+void printSimpleLine(const RuntimeSnapshot& snapshot) {
+  Serial.print(F("SIMPLE,"));
+  Serial.print(millis());
+  Serial.print(F(","));
+  Serial.print(snapshot.masterImuDeg, 2);
+  Serial.print(F(","));
+  Serial.print(snapshot.slaveImuDeg, 2);
+  Serial.print(F(","));
+  Serial.print(snapshot.kneeImuDeg, 2);
+  Serial.print(F(","));
+  Serial.print(snapshot.flexRawAdc);
+  Serial.print(F(","));
+  Serial.print(snapshot.flexAngleDeg, 2);
+  Serial.print(F(","));
+  Serial.print(snapshot.potRawAdc);
+  Serial.print(F(","));
+  Serial.print(snapshot.potAngleDeg, 2);
+  Serial.print(F(","));
+  Serial.println(bleCentral.stateText());
+}
 
+KneePhoneBle::TelemetryPacketV1 makePhoneTelemetryPacket(const RuntimeSnapshot& snapshot) {
   KneePhoneBle::TelemetryPacketV1 packet{};
   packet.version = KneePhoneBle::kTelemetryVersion;
   packet.flags = KneePhoneBle::kFlagNone;
@@ -357,19 +267,19 @@ KneePhoneBle::TelemetryPacketV1 makePhoneTelemetryPacket() {
   if (zeroReferences.applied) {
     packet.flags |= KneePhoneBle::kFlagImuZeroed;
   }
-  if (flex.valid) {
+  if (flexSensor.reading().valid) {
     packet.flags |= KneePhoneBle::kFlagFlexValid;
   }
   packet.flags |= KneePhoneBle::kFlagPotValid;
   packet.sequence = phoneTelemetrySequence++;
   packet.uptimeMs = millis();
-  packet.masterImuDeg = masterImuZeroedDeg();
-  packet.slaveImuDeg = slaveImuZeroedDeg();
-  packet.imuKneeDeg = calibratedImuAngleDeg();
-  packet.flexRawAdc = flex.rawAdc;
-  packet.flexAngleDeg = CalibratedAngleModels::flexAngleFromRawAdc(flex.rawAdc);
-  packet.potRawAdc = pot.rawAdc;
-  packet.potAngleDeg = CalibratedAngleModels::potAngleFromRawAdc(pot.rawAdc);
+  packet.masterImuDeg = snapshot.masterImuDeg;
+  packet.slaveImuDeg = snapshot.slaveImuDeg;
+  packet.imuKneeDeg = snapshot.kneeImuDeg;
+  packet.flexRawAdc = snapshot.flexRawAdc;
+  packet.flexAngleDeg = snapshot.flexAngleDeg;
+  packet.potRawAdc = snapshot.potRawAdc;
+  packet.potAngleDeg = snapshot.potAngleDeg;
   return packet;
 }
 
@@ -427,6 +337,7 @@ void setup() {
 
   flexSensor.begin();
   potSensor.begin();
+
   if (oledDisplay.begin()) {
     Serial.println(F("# OLED display detected on I2C."));
   } else {
@@ -441,11 +352,8 @@ void loop() {
 
   bleCentral.poll();
   phoneBle.poll();
-  if (bleCentral.consumeNewPacketFlag()) {
-    latchAlignedImuPair();
-  }
+  updateConnectionWatchdog(nowMs);
   handleSerialCommands();
-  updateCalibrationSession();
   handlePhoneCommands();
 
   if (nowMs - lastImuSampleMs >= MasterConfig::kImuSampleIntervalMs) {
@@ -459,26 +367,25 @@ void loop() {
     potSensor.update();
   }
 
-  if (nowMs - lastRuntimeLogMs >= MasterConfig::kCalibrationLogIntervalMs) {
-    lastRuntimeLogMs = nowMs;
-    printRuntimeSample();
-    printFlexSample();
-    printPotSample();
-    printImuSample();
+  const RuntimeSnapshot snapshot = makeSnapshot();
+
+  if (nowMs - lastDashboardMs >= MasterConfig::kDashboardIntervalMs) {
+    lastDashboardMs = nowMs;
+    printSimpleLine(snapshot);
   }
 
   if (nowMs - lastPhoneTelemetryMs >= MasterConfig::kPhoneTelemetryIntervalMs) {
     lastPhoneTelemetryMs = nowMs;
-    const KneePhoneBle::TelemetryPacketV1 telemetry = makePhoneTelemetryPacket();
+    const KneePhoneBle::TelemetryPacketV1 telemetry = makePhoneTelemetryPacket(snapshot);
     const KneePhoneBle::StatusPacketV1 status = makePhoneStatusPacket(telemetry.sequence);
     phoneBle.updateTelemetry(telemetry, status);
   }
 
   if (nowMs - lastOledUpdateMs >= MasterConfig::kOledUpdateIntervalMs) {
     lastOledUpdateMs = nowMs;
-    oledDisplay.render({masterImuZeroedDeg(),
-                        slaveImuZeroedDeg(),
-                        kneeAngleDeg(),
+    oledDisplay.render({snapshot.masterImuDeg,
+                        snapshot.slaveImuDeg,
+                        snapshot.kneeImuDeg,
                         zeroReferences.applied,
                         bleCentral.stateText()});
   }

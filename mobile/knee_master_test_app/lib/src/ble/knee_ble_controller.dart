@@ -210,7 +210,7 @@ class KneeBleController extends ChangeNotifier {
     }
 
     await _readTelemetryOnce(deviceId);
-    _telemetryPollTimer = Timer.periodic(const Duration(milliseconds: 250), (
+    _telemetryPollTimer = Timer.periodic(const Duration(milliseconds: 500), (
       _,
     ) async {
       if (!isConnected || connectedDeviceId != deviceId) {
