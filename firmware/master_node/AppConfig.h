@@ -21,6 +21,7 @@ static constexpr unsigned long kCalibrationLogIntervalMs = 50UL;    // 20 Hz
 static constexpr unsigned long kCalibrationCaptureWindowMs = 3000UL;
 static constexpr unsigned long kBleRetryIntervalMs = 1000UL;        // reconnect pacing
 static constexpr unsigned long kBlePacketTimeoutMs = 1000UL;        // stale-data timeout
+static constexpr unsigned long kPhoneTelemetryIntervalMs = 250UL;   // app-side polling cadence
 
 // ADC and analog assumptions
 static constexpr float kAdcFullScale = 4095.0f;
@@ -32,6 +33,7 @@ static constexpr float kCalibrationMaxAngleDeg = 145.0f;
 
 // OLED display
 static constexpr uint8_t kOledI2cAddress = 0x3C;
+static constexpr char kPhoneBleDeviceName[] = "KneeMaster";
 
 // XIAO MG24 exposes analog-capable pads using D-pin names in the Silicon Labs core.
 // These are placeholder assignments until your final wiring is confirmed.

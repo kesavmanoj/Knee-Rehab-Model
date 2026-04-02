@@ -26,8 +26,7 @@ class KneeBleController extends ChangeNotifier {
   StreamSubscription<BleStatus>? _bleStatusSubscription;
   StreamSubscription<DiscoveredDevice>? _scanSubscription;
   StreamSubscription<ConnectionStateUpdate>? _connectionSubscription;
-  StreamSubscription<List<int>>? _telemetrySubscription;
-  StreamSubscription<List<int>>? _statusSubscription;
+  Timer? _telemetryPollTimer;
 
   final List<DiscoveredDevice> _devices = <DiscoveredDevice>[];
 
@@ -174,8 +173,7 @@ class KneeBleController extends ChangeNotifier {
   void dispose() {
     _scanSubscription?.cancel();
     _connectionSubscription?.cancel();
-    _telemetrySubscription?.cancel();
-    _statusSubscription?.cancel();
+    _telemetryPollTimer?.cancel();
     _bleStatusSubscription?.cancel();
     super.dispose();
   }
@@ -211,49 +209,15 @@ class KneeBleController extends ChangeNotifier {
       lastError = 'MTU request failed: $error';
     }
 
-    _telemetrySubscription = _ble
-        .subscribeToCharacteristic(_telemetryCharacteristic(deviceId))
-        .listen(
-          (payload) {
-            lastTelemetryPayloadLength = payload.length;
-            try {
-              telemetry = KneeTelemetryPacket.fromBytes(payload);
-              lastTelemetryAt = DateTime.now();
-              lastError = null;
-            } catch (error) {
-              lastError = 'Telemetry parse failed: $error';
-            }
-            notifyListeners();
-          },
-          onError: (Object error) {
-            lastError = 'Telemetry subscription failed: $error';
-            notifyListeners();
-          },
-        );
-
-    _statusSubscription = _ble
-        .subscribeToCharacteristic(_statusCharacteristic(deviceId))
-        .listen(
-          (payload) {
-            status = KneeStatusPacket.fromBytes(payload);
-            notifyListeners();
-          },
-          onError: (Object error) {
-            lastError = 'Status subscription failed: $error';
-            notifyListeners();
-          },
-        );
-
-    try {
-      final telemetryPayload = await _ble.readCharacteristic(
-        _telemetryCharacteristic(deviceId),
-      );
-      lastTelemetryPayloadLength = telemetryPayload.length;
-      telemetry = KneeTelemetryPacket.fromBytes(telemetryPayload);
-      lastTelemetryAt = DateTime.now();
-    } catch (error) {
-      lastError = 'Telemetry read failed: $error';
-    }
+    await _readTelemetryOnce(deviceId);
+    _telemetryPollTimer = Timer.periodic(const Duration(milliseconds: 250), (
+      _,
+    ) async {
+      if (!isConnected || connectedDeviceId != deviceId) {
+        return;
+      }
+      await _readTelemetryOnce(deviceId);
+    });
 
     try {
       final payload = await _ble.readCharacteristic(_statusCharacteristic(deviceId));
@@ -287,10 +251,24 @@ class KneeBleController extends ChangeNotifier {
   }
 
   Future<void> _clearCharacteristicSubscriptions() async {
-    await _telemetrySubscription?.cancel();
-    await _statusSubscription?.cancel();
-    _telemetrySubscription = null;
-    _statusSubscription = null;
+    _telemetryPollTimer?.cancel();
+    _telemetryPollTimer = null;
+  }
+
+  Future<void> _readTelemetryOnce(String deviceId) async {
+    try {
+      final telemetryPayload = await _ble.readCharacteristic(
+        _telemetryCharacteristic(deviceId),
+      );
+      lastTelemetryPayloadLength = telemetryPayload.length;
+      telemetry = KneeTelemetryPacket.fromBytes(telemetryPayload);
+      lastTelemetryAt = DateTime.now();
+      lastError = null;
+      notifyListeners();
+    } catch (error) {
+      lastError = 'Telemetry read failed: $error';
+      notifyListeners();
+    }
   }
 
   QualifiedCharacteristic _telemetryCharacteristic(String deviceId) {

@@ -169,7 +169,7 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
             const Text('Live Telemetry'),
             const SizedBox(height: 12),
             if (telemetry == null)
-              const Text('No telemetry received yet. Connect and subscribe to KneeMaster.')
+              const Text('No telemetry received yet. Connect to KneeMaster and wait for the next telemetry poll.')
             else
               Wrap(
                 spacing: 12,

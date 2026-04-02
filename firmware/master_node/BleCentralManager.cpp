@@ -1,3 +1,5 @@
+#include <Arduino.h>
+
 #include "BleCentralManager.h"
 
 #include "AppConfig.h"
@@ -12,10 +14,13 @@ BleCentralManager::BleCentralManager()
 
 bool BleCentralManager::begin() {
   if (!BLE.begin()) {
+    Serial.println(F("# BLE central init failed."));
     return false;
   }
 
-  startScan();
+  Serial.println(F("# BLE central ready."));
+  state_ = State::Idle;
+  nextScanAtMs_ = 0;
   return true;
 }
 
@@ -24,6 +29,7 @@ void BleCentralManager::poll() {
 
   if (state_ == State::Connected) {
     if (!peripheral_.connected()) {
+      Serial.println(F("# Slave link lost."));
       resetConnection();
       deferScan();
       return;
@@ -42,6 +48,16 @@ void BleCentralManager::poll() {
   if (state_ == State::Scanning) {
     BLEDevice discoveredPeripheral = BLE.available();
     if (discoveredPeripheral) {
+      Serial.print(F("# Found slave candidate: "));
+      if (discoveredPeripheral.hasLocalName()) {
+        Serial.print(discoveredPeripheral.localName());
+      } else {
+        Serial.print(F("<no-name>"));
+      }
+      Serial.print(F(" @ "));
+      Serial.print(discoveredPeripheral.address());
+      Serial.print(F(" RSSI "));
+      Serial.println(discoveredPeripheral.rssi());
       connectToPeripheral(discoveredPeripheral);
     }
   }
@@ -95,12 +111,17 @@ void BleCentralManager::startScan() {
   BLE.stopScan();
   BLE.scanForUuid(KneeBle::kTelemetryServiceUuid);
   state_ = State::Scanning;
+  Serial.print(F("# Scanning for slave service "));
+  Serial.println(KneeBle::kTelemetryServiceUuid);
 }
 
 void BleCentralManager::deferScan() {
   BLE.stopScan();
   state_ = State::Idle;
   nextScanAtMs_ = millis() + MasterConfig::kBleRetryIntervalMs;
+  Serial.print(F("# Slave scan deferred for "));
+  Serial.print(MasterConfig::kBleRetryIntervalMs);
+  Serial.println(F(" ms"));
 }
 
 void BleCentralManager::resetConnection() {
@@ -116,13 +137,23 @@ void BleCentralManager::resetConnection() {
 bool BleCentralManager::connectToPeripheral(BLEDevice peripheral) {
   BLE.stopScan();
   state_ = State::Connecting;
+  Serial.print(F("# Connecting to slave: "));
+  if (peripheral.hasLocalName()) {
+    Serial.print(peripheral.localName());
+  } else {
+    Serial.print(F("<no-name>"));
+  }
+  Serial.print(F(" @ "));
+  Serial.println(peripheral.address());
 
   if (!peripheral.connect()) {
+    Serial.println(F("# Slave connect failed."));
     deferScan();
     return false;
   }
 
   if (!peripheral.discoverAttributes()) {
+    Serial.println(F("# Slave attribute discovery failed."));
     peripheral.disconnect();
     deferScan();
     return false;
@@ -131,12 +162,14 @@ bool BleCentralManager::connectToPeripheral(BLEDevice peripheral) {
   BLECharacteristic orientationCharacteristic =
       peripheral.characteristic(KneeBle::kOrientationCharacteristicUuid);
   if (!orientationCharacteristic) {
+    Serial.println(F("# Slave orientation characteristic missing."));
     peripheral.disconnect();
     deferScan();
     return false;
   }
 
   if (!orientationCharacteristic.canSubscribe() || !orientationCharacteristic.subscribe()) {
+    Serial.println(F("# Slave orientation subscribe failed."));
     peripheral.disconnect();
     deferScan();
     return false;
@@ -145,6 +178,7 @@ bool BleCentralManager::connectToPeripheral(BLEDevice peripheral) {
   peripheral_ = peripheral;
   orientationCharacteristic_ = orientationCharacteristic;
   state_ = State::Connected;
+  Serial.println(F("# Slave connected and subscribed."));
   readIncomingPacket();
   return true;
 }

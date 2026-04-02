@@ -11,6 +11,8 @@
 #include "FlexSensorModel.h"
 #include "GeneratedCalibration.h"
 #include "OledDisplayManager.h"
+#include "PhoneBlePeripheralManager.h"
+#include "PhoneBleProtocol.h"
 #include "PotentiometerModel.h"
 #include "SegmentOrientationEstimator.h"
 
@@ -34,6 +36,7 @@ CalibrationSession calibrationSession;
 SegmentOrientationEstimator thighImu;
 BleCentralManager bleCentral;
 OledDisplayManager oledDisplay;
+PhoneBlePeripheralManager phoneBle;
 FlexSensorModel flexSensor(MasterConfig::kFlex1Pin,
                            MasterConfig::kFlex1FixedResistorOhms,
                            MasterConfig::kFlexCalibrationTable,
@@ -50,6 +53,8 @@ uint32_t lastAnalogSampleMs = 0;
 uint32_t lastImuSampleMs = 0;
 uint32_t lastRuntimeLogMs = 0;
 uint32_t lastOledUpdateMs = 0;
+uint32_t lastPhoneTelemetryMs = 0;
+uint16_t phoneTelemetrySequence = 0;
 
 float wrapAngle180(float angleDeg) {
   while (angleDeg > 180.0f) {
@@ -115,9 +120,28 @@ void printHeader() {
   Serial.println(F("#   FLEX_SAMPLE,time_ms,flex_raw_adc,flex_filtered_adc,flex_voltage,flex_resistance_ohms,flex_angle_deg,label_deg"));
   Serial.println(F("#   POT_SAMPLE,time_ms,pot_raw_adc,pot_filtered_adc,pot_voltage,pot_angle_deg,label_deg"));
   Serial.println(F("#   IMU_SAMPLE,time_ms,master_imu_deg,slave_imu_deg,imu_raw_knee_angle_deg,imu_angle_deg,label_deg"));
+  Serial.println(F("# Phone BLE:"));
+  Serial.print(F("#   Device Name: "));
+  Serial.println(MasterConfig::kPhoneBleDeviceName);
+  Serial.print(F("#   Service UUID: "));
+  Serial.println(KneePhoneBle::kPhoneServiceUuid);
   Serial.println(F("#   LABEL_START,time_ms,label_deg,window_ms"));
   Serial.println(F("#   LABEL_END,time_ms,label_deg"));
   Serial.println(F("# Commands: h, z, r, or numeric angle 0..145"));
+}
+
+void captureImuZeroReference() {
+  zeroReferences.masterImuDeg = masterImuRawDeg();
+  zeroReferences.slaveImuDeg = slaveImuRawDeg();
+  zeroReferences.applied = true;
+  Serial.println(F("# IMU zero reference captured."));
+}
+
+void clearImuZeroReference() {
+  zeroReferences.masterImuDeg = 0.0f;
+  zeroReferences.slaveImuDeg = 0.0f;
+  zeroReferences.applied = false;
+  Serial.println(F("# IMU zero reference cleared."));
 }
 
 void handleCommand(const char* command) {
@@ -127,18 +151,12 @@ void handleCommand(const char* command) {
   }
 
   if (strcmp(command, "z") == 0 || strcmp(command, "Z") == 0) {
-    zeroReferences.masterImuDeg = masterImuRawDeg();
-    zeroReferences.slaveImuDeg = slaveImuRawDeg();
-    zeroReferences.applied = true;
-    Serial.println(F("# IMU zero reference captured."));
+    captureImuZeroReference();
     return;
   }
 
   if (strcmp(command, "r") == 0 || strcmp(command, "R") == 0) {
-    zeroReferences.masterImuDeg = 0.0f;
-    zeroReferences.slaveImuDeg = 0.0f;
-    zeroReferences.applied = false;
-    Serial.println(F("# IMU zero reference cleared."));
+    clearImuZeroReference();
     return;
   }
 
@@ -306,6 +324,75 @@ void printImuSample() {
   }
 }
 
+void handlePhoneCommands() {
+  if (!phoneBle.hasPendingCommand()) {
+    return;
+  }
+
+  const KneePhoneBle::CommandPacketV1 command = phoneBle.consumePendingCommand();
+  switch (command.commandId) {
+    case KneePhoneBle::kCmdZeroImu:
+      captureImuZeroReference();
+      break;
+    case KneePhoneBle::kCmdClearZero:
+      clearImuZeroReference();
+      break;
+    default:
+      Serial.println(F("# Ignored phone command."));
+      break;
+  }
+}
+
+KneePhoneBle::TelemetryPacketV1 makePhoneTelemetryPacket() {
+  const auto& flex = flexSensor.reading();
+  const auto& pot = potSensor.reading();
+
+  KneePhoneBle::TelemetryPacketV1 packet{};
+  packet.version = KneePhoneBle::kTelemetryVersion;
+  packet.flags = KneePhoneBle::kFlagNone;
+  if (bleCentral.hasFreshPacket()) {
+    packet.flags |= KneePhoneBle::kFlagSlaveConnected;
+    packet.flags |= KneePhoneBle::kFlagImuValid;
+  }
+  if (zeroReferences.applied) {
+    packet.flags |= KneePhoneBle::kFlagImuZeroed;
+  }
+  if (flex.valid) {
+    packet.flags |= KneePhoneBle::kFlagFlexValid;
+  }
+  packet.flags |= KneePhoneBle::kFlagPotValid;
+  packet.sequence = phoneTelemetrySequence++;
+  packet.uptimeMs = millis();
+  packet.masterImuDeg = masterImuZeroedDeg();
+  packet.slaveImuDeg = slaveImuZeroedDeg();
+  packet.imuKneeDeg = calibratedImuAngleDeg();
+  packet.flexRawAdc = flex.rawAdc;
+  packet.flexAngleDeg = CalibratedAngleModels::flexAngleFromRawAdc(flex.rawAdc);
+  packet.potRawAdc = pot.rawAdc;
+  packet.potAngleDeg = CalibratedAngleModels::potAngleFromRawAdc(pot.rawAdc);
+  return packet;
+}
+
+KneePhoneBle::StatusPacketV1 makePhoneStatusPacket(uint16_t lastSequence) {
+  KneePhoneBle::StatusPacketV1 packet{};
+  packet.version = KneePhoneBle::kStatusVersion;
+  packet.flags = KneePhoneBle::kFlagNone;
+  if (bleCentral.hasFreshPacket()) {
+    packet.flags |= KneePhoneBle::kFlagSlaveConnected;
+    packet.flags |= KneePhoneBle::kFlagImuValid;
+  }
+  if (zeroReferences.applied) {
+    packet.flags |= KneePhoneBle::kFlagImuZeroed;
+  }
+  if (flexSensor.reading().valid) {
+    packet.flags |= KneePhoneBle::kFlagFlexValid;
+  }
+  packet.flags |= KneePhoneBle::kFlagPotValid;
+  packet.lastSequence = lastSequence;
+  packet.uptimeMs = millis();
+  return packet;
+}
+
 }  // namespace
 
 void setup() {
@@ -331,6 +418,13 @@ void setup() {
     }
   }
 
+  if (!phoneBle.begin()) {
+    Serial.println(F("# Warning: Failed to initialize phone BLE service."));
+  } else {
+    Serial.print(F("# Phone BLE advertising as "));
+    Serial.println(MasterConfig::kPhoneBleDeviceName);
+  }
+
   flexSensor.begin();
   potSensor.begin();
   if (oledDisplay.begin()) {
@@ -346,11 +440,13 @@ void loop() {
   const uint32_t nowMs = millis();
 
   bleCentral.poll();
+  phoneBle.poll();
   if (bleCentral.consumeNewPacketFlag()) {
     latchAlignedImuPair();
   }
   handleSerialCommands();
   updateCalibrationSession();
+  handlePhoneCommands();
 
   if (nowMs - lastImuSampleMs >= MasterConfig::kImuSampleIntervalMs) {
     lastImuSampleMs = nowMs;
@@ -369,6 +465,13 @@ void loop() {
     printFlexSample();
     printPotSample();
     printImuSample();
+  }
+
+  if (nowMs - lastPhoneTelemetryMs >= MasterConfig::kPhoneTelemetryIntervalMs) {
+    lastPhoneTelemetryMs = nowMs;
+    const KneePhoneBle::TelemetryPacketV1 telemetry = makePhoneTelemetryPacket();
+    const KneePhoneBle::StatusPacketV1 status = makePhoneStatusPacket(telemetry.sequence);
+    phoneBle.updateTelemetry(telemetry, status);
   }
 
   if (nowMs - lastOledUpdateMs >= MasterConfig::kOledUpdateIntervalMs) {
