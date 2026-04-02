@@ -51,10 +51,32 @@ uint32_t lastAnalogSampleMs = 0;
 uint32_t lastDashboardMs = 0;
 uint32_t lastOledUpdateMs = 0;
 uint32_t lastPhoneTelemetryMs = 0;
+uint32_t lastDebugHeartbeatMs = 0;
 uint16_t phoneTelemetrySequence = 0;
 uint32_t recoveryStartedMs = 0;
 uint32_t connectedSinceMs = 0;
 bool lastSlaveLinkHealthy = false;
+uint8_t recoveryDisconnectCount = 0;
+const char* currentPhase = "BOOT";
+
+uint32_t loopCount = 0;
+uint32_t centralPollCount = 0;
+uint32_t phonePollCount = 0;
+uint32_t imuUpdateCount = 0;
+uint32_t analogUpdateCount = 0;
+uint32_t dashboardPrintCount = 0;
+uint32_t oledRenderCount = 0;
+uint32_t oledRecoverCount = 0;
+uint32_t oledTimeoutCount = 0;
+uint32_t phoneTxBeginCount = 0;
+uint32_t phoneTxEndCount = 0;
+uint32_t phoneTxFailCount = 0;
+uint32_t serialCommandCount = 0;
+uint32_t phoneCommandCount = 0;
+
+void setPhase(const char* phase) {
+  currentPhase = phase;
+}
 
 float wrapAngle180(float angleDeg) {
   while (angleDeg > 180.0f) {
@@ -147,6 +169,13 @@ void updateConnectionWatchdog(uint32_t nowMs) {
         (nowMs - connectedSinceMs) >= MasterConfig::kConnectionStableTimeMs) {
       Serial.println(F("# Master-slave link considered stable, watchdog cleared."));
       recoveryStartedMs = 0UL;
+      recoveryDisconnectCount = 0U;
+    }
+
+    if (recoveryStartedMs != 0UL &&
+        (nowMs - recoveryStartedMs) >= MasterConfig::kConnectionResetTimeoutMs) {
+      Serial.println(F("# Master-slave link kept flapping and never became stable."));
+      resetBoard();
     }
 
     return;
@@ -156,9 +185,14 @@ void updateConnectionWatchdog(uint32_t nowMs) {
     if (recoveryStartedMs == 0UL) {
       recoveryStartedMs = nowMs;
     }
+    ++recoveryDisconnectCount;
     connectedSinceMs = 0UL;
     lastSlaveLinkHealthy = false;
     Serial.println(F("# Master lost slave link, recovery watchdog armed."));
+    if (recoveryDisconnectCount >= MasterConfig::kConnectionResetDisconnectCount) {
+      Serial.println(F("# Master exceeded disconnect flap limit during recovery."));
+      resetBoard();
+    }
     return;
   }
 
@@ -174,6 +208,7 @@ void updateConnectionWatchdog(uint32_t nowMs) {
 }
 
 void handleCommand(const char* command) {
+  ++serialCommandCount;
   if (strcmp(command, "h") == 0 || strcmp(command, "H") == 0) {
     printHeader();
     return;
@@ -221,6 +256,7 @@ void handlePhoneCommands() {
     return;
   }
 
+  ++phoneCommandCount;
   const KneePhoneBle::CommandPacketV1 command = phoneBle.consumePendingCommand();
   switch (command.commandId) {
     case KneePhoneBle::kCmdZeroImu:
@@ -254,6 +290,51 @@ void printSimpleLine(const RuntimeSnapshot& snapshot) {
   Serial.print(snapshot.potAngleDeg, 2);
   Serial.print(F(","));
   Serial.println(bleCentral.stateText());
+}
+
+void printDebugHeartbeat(const RuntimeSnapshot& snapshot) {
+  Serial.print(F("# HEARTBEAT,"));
+  Serial.print(millis());
+  Serial.print(F(",phase="));
+  Serial.print(currentPhase);
+  Serial.print(F(",ble="));
+  Serial.print(bleCentral.stateText());
+  Serial.print(F(",pkt_age="));
+  Serial.print(bleCentral.hasPacket() ? bleCentral.packetAgeMs() : 0UL);
+  Serial.print(F(",master="));
+  Serial.print(snapshot.masterImuDeg, 2);
+  Serial.print(F(",slave="));
+  Serial.print(snapshot.slaveImuDeg, 2);
+  Serial.print(F(",knee="));
+  Serial.print(snapshot.kneeImuDeg, 2);
+  Serial.print(F(",loops="));
+  Serial.print(loopCount);
+  Serial.print(F(",cen="));
+  Serial.print(centralPollCount);
+  Serial.print(F(",phn="));
+  Serial.print(phonePollCount);
+  Serial.print(F(",imu="));
+  Serial.print(imuUpdateCount);
+  Serial.print(F(",adc="));
+  Serial.print(analogUpdateCount);
+  Serial.print(F(",dash="));
+  Serial.print(dashboardPrintCount);
+  Serial.print(F(",oled="));
+  Serial.print(oledRenderCount);
+  Serial.print(F(",oled_rec="));
+  Serial.print(oledRecoverCount);
+  Serial.print(F(",oled_to="));
+  Serial.print(oledTimeoutCount);
+  Serial.print(F(",tx_beg="));
+  Serial.print(phoneTxBeginCount);
+  Serial.print(F(",tx_end="));
+  Serial.print(phoneTxEndCount);
+  Serial.print(F(",tx_fail="));
+  Serial.print(phoneTxFailCount);
+  Serial.print(F(",ser_cmd="));
+  Serial.print(serialCommandCount);
+  Serial.print(F(",phn_cmd="));
+  Serial.println(phoneCommandCount);
 }
 
 KneePhoneBle::TelemetryPacketV1 makePhoneTelemetryPacket(const RuntimeSnapshot& snapshot) {
@@ -312,6 +393,8 @@ void setup() {
   }
 
   Wire.begin();
+  Wire.setWireTimeout(1000, true);
+  Wire.clearWireTimeoutFlag();
   analogReadResolution(12);
 
   if (!thighImu.begin()) {
@@ -345,48 +428,104 @@ void setup() {
   }
 
   printHeader();
+  if (Serial) {
+    Serial.println(F("# Debug heartbeat enabled."));
+  }
 }
 
 void loop() {
+  ++loopCount;
   const uint32_t nowMs = millis();
 
+  setPhase("CEN");
   bleCentral.poll();
+  ++centralPollCount;
+  setPhase("PHN");
   phoneBle.poll();
+  ++phonePollCount;
+  setPhase("WDOG");
   updateConnectionWatchdog(nowMs);
+  setPhase("SER");
   handleSerialCommands();
+  setPhase("CMD");
   handlePhoneCommands();
 
   if (nowMs - lastImuSampleMs >= MasterConfig::kImuSampleIntervalMs) {
+    setPhase("IMU");
     lastImuSampleMs = nowMs;
     thighImu.update();
+    ++imuUpdateCount;
   }
 
   if (nowMs - lastAnalogSampleMs >= MasterConfig::kAnalogSampleIntervalMs) {
+    setPhase("ADC");
     lastAnalogSampleMs = nowMs;
     flexSensor.update();
     potSensor.update();
+    ++analogUpdateCount;
   }
 
+  setPhase("SNAP");
   const RuntimeSnapshot snapshot = makeSnapshot();
 
   if (nowMs - lastDashboardMs >= MasterConfig::kDashboardIntervalMs) {
+    setPhase("DASH");
     lastDashboardMs = nowMs;
     printSimpleLine(snapshot);
+    ++dashboardPrintCount;
+  }
+
+  if (nowMs - lastDebugHeartbeatMs >= MasterConfig::kDebugHeartbeatIntervalMs) {
+    setPhase("HBT");
+    lastDebugHeartbeatMs = nowMs;
+    printDebugHeartbeat(snapshot);
   }
 
   if (nowMs - lastPhoneTelemetryMs >= MasterConfig::kPhoneTelemetryIntervalMs) {
+    setPhase("TX");
     lastPhoneTelemetryMs = nowMs;
     const KneePhoneBle::TelemetryPacketV1 telemetry = makePhoneTelemetryPacket(snapshot);
     const KneePhoneBle::StatusPacketV1 status = makePhoneStatusPacket(telemetry.sequence);
-    phoneBle.updateTelemetry(telemetry, status);
+    ++phoneTxBeginCount;
+    Serial.print(F("# DBG,TX_BEGIN,"));
+    Serial.print(nowMs);
+    Serial.print(F(","));
+    Serial.println(telemetry.sequence);
+    const bool txOk = phoneBle.updateTelemetry(telemetry, status);
+    ++phoneTxEndCount;
+    if (!txOk) {
+      ++phoneTxFailCount;
+    }
+    Serial.print(F("# DBG,TX_END,"));
+    Serial.print(millis());
+    Serial.print(F(","));
+    Serial.print(telemetry.sequence);
+    Serial.print(F(","));
+    Serial.println(txOk ? F("OK") : F("FAIL"));
   }
 
   if (nowMs - lastOledUpdateMs >= MasterConfig::kOledUpdateIntervalMs) {
+    setPhase("OLED");
     lastOledUpdateMs = nowMs;
-    oledDisplay.render({snapshot.masterImuDeg,
-                        snapshot.slaveImuDeg,
-                        snapshot.kneeImuDeg,
-                        zeroReferences.applied,
-                        bleCentral.stateText()});
+    const bool oledOk = oledDisplay.render({snapshot.masterImuDeg,
+                                            snapshot.slaveImuDeg,
+                                            snapshot.kneeImuDeg,
+                                            zeroReferences.applied,
+                                            phoneBle.isPhoneConnected(),
+                                            bleCentral.stateText(),
+                                            currentPhase});
+    ++oledRenderCount;
+    if (!oledOk) {
+      ++oledTimeoutCount;
+      Serial.println(F("# OLED render timeout/failure detected."));
+      if (oledDisplay.recoverFromTimeout()) {
+        ++oledRecoverCount;
+        Serial.println(F("# OLED recovered after timeout."));
+      } else {
+        Serial.println(F("# OLED recovery failed; continuing without display."));
+      }
+    }
   }
+
+  setPhase("IDLE");
 }

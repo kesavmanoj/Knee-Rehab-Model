@@ -22,8 +22,10 @@ static constexpr unsigned long kCalibrationCaptureWindowMs = 3000UL;
 static constexpr unsigned long kBleRetryIntervalMs = 1000UL;        // reconnect pacing
 static constexpr unsigned long kBlePacketTimeoutMs = 1000UL;        // stale-data timeout
 static constexpr unsigned long kPhoneTelemetryIntervalMs = 500UL;   // lower phone BLE load for dual-role stability
+static constexpr unsigned long kDebugHeartbeatIntervalMs = 1000UL;  // once-per-second loop health report
 static constexpr unsigned long kConnectionStableTimeMs = 2000UL;    // require a continuously healthy slave link before clearing recovery
 static constexpr unsigned long kConnectionResetTimeoutMs = 6000UL;  // reboot if the slave link never becomes stable
+static constexpr uint8_t kConnectionResetDisconnectCount = 3U;       // reboot after repeated flaps during recovery
 
 // ADC and analog assumptions
 static constexpr float kAdcFullScale = 4095.0f;

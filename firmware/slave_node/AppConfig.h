@@ -11,8 +11,8 @@ static constexpr unsigned long kSerialBaud = 115200UL;
 static constexpr unsigned long kImuSampleIntervalMs = 5UL;      // 200 Hz
 static constexpr unsigned long kBleNotifyIntervalMs = 20UL;     // 50 Hz for better central+phone stability
 static constexpr unsigned long kSerialDebugIntervalMs = 200UL;  // 5 Hz
-static constexpr unsigned long kConnectionStableTimeMs = 2000UL;     // require a continuously stable link before considering recovery successful
-static constexpr unsigned long kConnectionResetTimeoutMs = 6000UL;    // reboot if recovery never reaches a stable connection window
+static constexpr unsigned long kConnectionHealthyWindowMs = 500UL; // require a short continuous window of good publishes before considering the link healthy
+static constexpr unsigned long kConnectionResetTimeoutMs = 2000UL; // while unhealthy, reboot every ~2 s until the link is healthy
 
 // Complementary filter tuning
 static constexpr float kComplementaryAlphaMoving = 0.985f;

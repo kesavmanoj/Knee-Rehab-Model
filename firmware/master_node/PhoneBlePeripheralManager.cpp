@@ -14,7 +14,8 @@ PhoneBlePeripheralManager::PhoneBlePeripheralManager()
                             BLERead,
                             sizeof(KneePhoneBle::StatusPacketV1)),
       pendingCommand_{},
-      hasPendingCommand_(false) {}
+      hasPendingCommand_(false),
+      phoneConnected_(false) {}
 
 bool PhoneBlePeripheralManager::begin() {
   BLE.setDeviceName(MasterConfig::kPhoneBleDeviceName);
@@ -40,6 +41,19 @@ bool PhoneBlePeripheralManager::begin() {
 }
 
 void PhoneBlePeripheralManager::poll() {
+  BLEDevice central = BLE.central();
+  const bool connectedNow = central && central.connected();
+  if (connectedNow && !phoneConnected_) {
+    phoneConnected_ = true;
+    Serial.print(F("# Phone connected: "));
+    Serial.println(central.address());
+  } else if (!connectedNow && phoneConnected_) {
+    phoneConnected_ = false;
+    hasPendingCommand_ = false;
+    BLE.advertise();
+    Serial.println(F("# Phone disconnected; advertising resumed."));
+  }
+
   if (commandCharacteristic_.written()) {
     KneePhoneBle::CommandPacketV1 command{};
     const int bytesRead =
@@ -71,4 +85,8 @@ bool PhoneBlePeripheralManager::hasPendingCommand() const {
 KneePhoneBle::CommandPacketV1 PhoneBlePeripheralManager::consumePendingCommand() {
   hasPendingCommand_ = false;
   return pendingCommand_;
+}
+
+bool PhoneBlePeripheralManager::isPhoneConnected() const {
+  return phoneConnected_;
 }

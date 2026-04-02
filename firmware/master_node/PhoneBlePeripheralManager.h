@@ -15,6 +15,7 @@ class PhoneBlePeripheralManager {
 
   bool hasPendingCommand() const;
   KneePhoneBle::CommandPacketV1 consumePendingCommand();
+  bool isPhoneConnected() const;
 
  private:
   BLEService service_;
@@ -24,4 +25,5 @@ class PhoneBlePeripheralManager {
 
   KneePhoneBle::CommandPacketV1 pendingCommand_;
   bool hasPendingCommand_;
+  bool phoneConnected_;
 };
