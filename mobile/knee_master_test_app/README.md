@@ -16,7 +16,7 @@ It is intentionally narrow in scope:
 This app targets the UUIDs defined in:
 
 - [PHONE_APP_BLE_SPEC.md](c:/Users/KESAV/Downloads/Knee-Rehab-Model/PHONE_APP_BLE_SPEC.md)
-- [PhoneBleProtocol.h](c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/common/PhoneBleProtocol.h)
+- [PhoneBleProtocol.h](c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/master_node/PhoneBleProtocol.h)
 
 ## App Structure
 

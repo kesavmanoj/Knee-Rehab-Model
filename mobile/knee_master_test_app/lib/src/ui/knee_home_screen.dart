@@ -166,7 +166,7 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            const Text('Live Telemetry'),
+              const Text('Live Telemetry'),
             const SizedBox(height: 12),
             if (telemetry == null)
               const Text('No telemetry received yet. Connect to KneeMaster and wait for the next telemetry poll.')
@@ -175,13 +175,7 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
                 spacing: 12,
                 runSpacing: 12,
                 children: <Widget>[
-                  _ValueTile(label: 'Master IMU', value: _formatAngle(telemetry.masterImuDeg)),
-                  _ValueTile(label: 'Slave IMU', value: _formatAngle(telemetry.slaveImuDeg)),
-                  _ValueTile(label: 'IMU Knee', value: _formatAngle(telemetry.imuKneeDeg)),
-                  _ValueTile(label: 'Flex Raw ADC', value: telemetry.flexRawAdc.toString()),
-                  _ValueTile(label: 'Flex Angle', value: _formatAngle(telemetry.flexAngleDeg)),
-                  _ValueTile(label: 'POT Raw ADC', value: telemetry.potRawAdc.toString()),
-                  _ValueTile(label: 'POT Angle', value: _formatAngle(telemetry.potAngleDeg)),
+                  _ValueTile(label: 'Final Angle', value: _formatAngle(telemetry.finalAngleDeg)),
                   _ValueTile(label: 'Sequence', value: telemetry.sequence.toString()),
                   _ValueTile(
                     label: 'Payload Bytes',
@@ -315,8 +309,6 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
     if (flags.slaveConnected) labels.add('Slave');
     if (flags.imuZeroed) labels.add('Zeroed');
     if (flags.imuValid) labels.add('IMU');
-    if (flags.flexValid) labels.add('Flex');
-    if (flags.potValid) labels.add('POT');
     if (labels.isEmpty) {
       return 'None';
     }

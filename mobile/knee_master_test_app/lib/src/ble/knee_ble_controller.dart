@@ -29,7 +29,6 @@ class KneeBleController extends ChangeNotifier {
   Timer? _telemetryPollTimer;
 
   final List<DiscoveredDevice> _devices = <DiscoveredDevice>[];
-
   BleStatus bleStatus = BleStatus.unknown;
   bool permissionsGranted = false;
   bool isScanning = false;
@@ -210,7 +209,7 @@ class KneeBleController extends ChangeNotifier {
     }
 
     await _readTelemetryOnce(deviceId);
-    _telemetryPollTimer = Timer.periodic(const Duration(milliseconds: 500), (
+    _telemetryPollTimer = Timer.periodic(const Duration(milliseconds: 100), (
       _,
     ) async {
       if (!isConnected || connectedDeviceId != deviceId) {
