@@ -13,6 +13,7 @@ bool BlePeripheralManager::begin(const char* deviceName) {
   instance_ = this;
 
   if (!BLE.begin()) {
+    Serial.println(F("# Slave BLE peripheral init failed."));
     return false;
   }
 
@@ -31,6 +32,10 @@ bool BlePeripheralManager::begin(const char* deviceName) {
   BLE.setEventHandler(BLEConnected, BlePeripheralManager::onBleConnected);
   BLE.setEventHandler(BLEDisconnected, BlePeripheralManager::onBleDisconnected);
   BLE.advertise();
+  Serial.print(F("# Slave advertising as "));
+  Serial.print(deviceName);
+  Serial.print(F(" service "));
+  Serial.println(KneeBle::kTelemetryServiceUuid);
   return true;
 }
 
@@ -51,6 +56,7 @@ void BlePeripheralManager::onBleConnected(BLEDevice) {
   if (instance_ != nullptr) {
     instance_->connected_ = true;
   }
+  Serial.println(F("# Slave connected to central."));
 }
 
 void BlePeripheralManager::onBleDisconnected(BLEDevice) {
@@ -58,4 +64,5 @@ void BlePeripheralManager::onBleDisconnected(BLEDevice) {
     instance_->connected_ = false;
     BLE.advertise();
   }
+  Serial.println(F("# Slave disconnected, advertising resumed."));
 }

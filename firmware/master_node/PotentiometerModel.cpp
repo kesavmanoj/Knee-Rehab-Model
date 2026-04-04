@@ -1,6 +1,7 @@
 #include "PotentiometerModel.h"
 
 #include "AppConfig.h"
+#include "GeneratedCalibration.h"
 
 PotentiometerModel::PotentiometerModel(uint8_t pin) : channel_(pin), reading_{} {}
 
@@ -15,7 +16,9 @@ void PotentiometerModel::update() {
   reading_.rawAdc = channel_.rawAdc();
   reading_.filteredAdc = channel_.filteredAdc();
   reading_.voltage = channel_.voltage();
-  reading_.angleDeg = (reading_.filteredAdc / MasterConfig::kAdcFullScale) * MasterConfig::kPotMaxAngleDeg;
+  reading_.angleDeg =
+      (GeneratedCalibration::kPotRawAdcSlope * reading_.filteredAdc) +
+      GeneratedCalibration::kPotRawAdcIntercept;
 }
 
 const PotentiometerReading& PotentiometerModel::reading() const {

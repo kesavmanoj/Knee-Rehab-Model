@@ -1,5 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
+#include <core_cm33.h>
+#include <WatchdogTimer.h>
 
 #include "BleProtocol.h"
 #include "AppConfig.h"
@@ -25,6 +27,8 @@ uint32_t lastImuSampleMs = 0;
 uint32_t lastBleNotifyMs = 0;
 uint32_t lastSerialDebugMs = 0;
 uint32_t lastUpdateMicros = 0;
+uint32_t healthyStreamingStartedMs = 0;
+bool healthyStreamingAnnounced = false;
 
 bool imuHealthy = false;
 bool zeroApplied = false;
@@ -54,6 +58,13 @@ void printHelp() {
   Serial.println(F("  z -> zero current primary IMU angle"));
   Serial.println(F("  r -> reset zero offset"));
   Serial.println(F("  h -> show help"));
+}
+
+void resetBoard() {
+  Serial.println(F("Slave watchdog reset."));
+  Serial.flush();
+  delay(50);
+  NVIC_SystemReset();
 }
 
 void handleSerialCommands() {
@@ -112,7 +123,7 @@ void updateImu() {
   imuHealthy = true;
 }
 
-void sendBlePacket() {
+bool sendBlePacket() {
   KneeBle::OrientationPacketV1 packet{};
   packet.version = KneeBle::kProtocolVersion;
   packet.flags = KneeBle::kFlagNone;
@@ -129,7 +140,7 @@ void sendBlePacket() {
   packet.rollDeg = fusedRollDeg;
   packet.accelPitchDeg = latestSample.accelPitchDeg * SlaveConfig::kPitchSign;
 
-  bleManager.publish(packet);
+  return bleManager.publish(packet);
 }
 
 void printDebugLine() {
@@ -146,6 +157,23 @@ void printDebugLine() {
   Serial.println(buffer);
 }
 
+void updateHardwareWatchdog(uint32_t nowMs) {
+  const bool healthyLink =
+      healthyStreamingStartedMs != 0UL &&
+      (nowMs - healthyStreamingStartedMs) >= SlaveConfig::kConnectionHealthyWindowMs;
+
+  if (healthyLink) {
+    WatchdogTimer.feed();
+    if (!healthyStreamingAnnounced) {
+      healthyStreamingAnnounced = true;
+      Serial.println(F("Slave hardware watchdog is now being fed."));
+    }
+    return;
+  }
+
+  healthyStreamingAnnounced = false;
+}
+
 }  // namespace
 
 void setup() {
@@ -158,6 +186,11 @@ void setup() {
 
   Serial.println();
   Serial.println(F("Knee Rehab Slave Node"));
+  Serial.print(F("Primary IMU axis: "));
+  Serial.println(SlaveConfig::kUsePitchAsPrimaryAxis ? F("PITCH") : F("ROLL"));
+  if (WatchdogTimer.watchdogResetHappened()) {
+    Serial.println(F("Slave restarted after a hardware watchdog reset."));
+  }
   printHelp();
 
   if (!imuManager.begin()) {
@@ -173,6 +206,9 @@ void setup() {
       delay(100);
     }
   }
+
+  healthyStreamingStartedMs = 0UL;
+  WatchdogTimer.begin(WDOG_PERIOD_2_S);
 
   updateImu();
   pitchFilter.begin(latestSample.accelPitchDeg * SlaveConfig::kPitchSign);
@@ -194,8 +230,20 @@ void loop() {
 
   if (nowMs - lastBleNotifyMs >= SlaveConfig::kBleNotifyIntervalMs) {
     lastBleNotifyMs = nowMs;
-    sendBlePacket();
+    if (bleManager.isConnected() && sendBlePacket()) {
+      if (healthyStreamingStartedMs == 0UL) {
+        healthyStreamingStartedMs = nowMs;
+        Serial.println(F("Slave good BLE publishing started."));
+      }
+    } else {
+      if (healthyStreamingStartedMs != 0UL) {
+        Serial.println(F("Slave lost continuous good BLE publishing."));
+      }
+      healthyStreamingStartedMs = 0UL;
+    }
   }
+
+  updateHardwareWatchdog(nowMs);
 
   if (nowMs - lastSerialDebugMs >= SlaveConfig::kSerialDebugIntervalMs) {
     lastSerialDebugMs = nowMs;

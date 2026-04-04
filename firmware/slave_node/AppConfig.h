@@ -9,15 +9,17 @@ static constexpr unsigned long kSerialBaud = 115200UL;
 
 // Scheduling
 static constexpr unsigned long kImuSampleIntervalMs = 5UL;      // 200 Hz
-static constexpr unsigned long kBleNotifyIntervalMs = 10UL;     // 100 Hz
+static constexpr unsigned long kBleNotifyIntervalMs = 20UL;     // 50 Hz for better central+phone stability
 static constexpr unsigned long kSerialDebugIntervalMs = 200UL;  // 5 Hz
+static constexpr unsigned long kConnectionHealthyWindowMs = 500UL; // require a short continuous window of good publishes before considering the link healthy
+static constexpr unsigned long kConnectionResetTimeoutMs = 2000UL; // while unhealthy, reboot every ~2 s until the link is healthy
 
 // Complementary filter tuning
 static constexpr float kComplementaryAlphaMoving = 0.985f;
 static constexpr float kComplementaryAlphaSettled = 0.90f;
 static constexpr float kGyroQuietThresholdDps = 8.0f;
 static constexpr float kGyroFastThresholdDps = 60.0f;
-static constexpr bool kUsePitchAsPrimaryAxis = false;
+static constexpr bool kUsePitchAsPrimaryAxis = true;
 
 // Mounting correction terms. Adjust signs once the boards are physically mounted.
 static constexpr float kPitchSign = 1.0f;

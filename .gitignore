@@ -1,0 +1,36 @@
+calibration_output/
+calibration_sessions/
+launchers/
+# Local bundled tools
+bin/
+
+# Python caches and virtual environment noise
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
+.venv/
+venv/
+env/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+
+# IDE/editor local state
+.idea/
+.vs/
+
+# Flutter / Dart / Android build artifacts
+.dart_tool/
+**/build/
+**/.gradle/
+**/android/.gradle/
+**/android/app/build/
+
+# OS clutter
+.DS_Store
+Thumbs.db
