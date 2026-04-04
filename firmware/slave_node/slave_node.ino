@@ -186,6 +186,8 @@ void setup() {
 
   Serial.println();
   Serial.println(F("Knee Rehab Slave Node"));
+  Serial.print(F("Primary IMU axis: "));
+  Serial.println(SlaveConfig::kUsePitchAsPrimaryAxis ? F("PITCH") : F("ROLL"));
   if (WatchdogTimer.watchdogResetHappened()) {
     Serial.println(F("Slave restarted after a hardware watchdog reset."));
   }

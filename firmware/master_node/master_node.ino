@@ -11,6 +11,7 @@
 #include "PhoneBlePeripheralManager.h"
 #include "PhoneBleProtocol.h"
 #include "PotentiometerModel.h"
+#include "SensorFusion.h"
 #include "SegmentOrientationEstimator.h"
 
 namespace {
@@ -25,9 +26,15 @@ struct RuntimeSnapshot {
   float masterImuDeg;
   float slaveImuDeg;
   float kneeImuDeg;
+  float fusedKneeDeg;
+  float fusedImuWeight;
+  float fusedFlexWeight;
+  float fusedPotWeight;
   uint16_t flexRawAdc;
   float flexAngleDeg;
   uint16_t potRawAdc;
+  float potFilteredAdc;
+  float potVoltage;
   float potAngleDeg;
 };
 
@@ -35,6 +42,7 @@ SegmentOrientationEstimator thighImu;
 BleCentralManager bleCentral;
 OledDisplayManager oledDisplay;
 PhoneBlePeripheralManager phoneBle;
+SensorFusion sensorFusion;
 FlexSensorModel flexSensor(MasterConfig::kFlex1Pin,
                            MasterConfig::kFlex1FixedResistorOhms,
                            MasterConfig::kFlexCalibrationTable,
@@ -73,6 +81,9 @@ uint32_t phoneTxEndCount = 0;
 uint32_t phoneTxFailCount = 0;
 uint32_t serialCommandCount = 0;
 uint32_t phoneCommandCount = 0;
+bool potCalibrationLabelActive = false;
+float potCalibrationLabelDeg = 0.0f;
+uint32_t potCalibrationLabelEndMs = 0;
 
 void setPhase(const char* phase) {
   currentPhase = phase;
@@ -111,14 +122,29 @@ float kneeImuDeg() {
 RuntimeSnapshot makeSnapshot() {
   const FlexSensorReading& flex = flexSensor.reading();
   const PotentiometerReading& pot = potSensor.reading();
+  const float imuKneeAngle = kneeImuDeg();
+  const SensorFusionResult fused = sensorFusion.fuse({
+      bleCentral.hasFreshPacket(),
+      imuKneeAngle,
+      flex.valid,
+      flex.angleDeg,
+      isfinite(pot.angleDeg),
+      pot.angleDeg,
+  });
 
   RuntimeSnapshot snapshot{};
   snapshot.masterImuDeg = masterImuZeroedDeg();
   snapshot.slaveImuDeg = slaveImuZeroedDeg();
-  snapshot.kneeImuDeg = kneeImuDeg();
+  snapshot.kneeImuDeg = imuKneeAngle;
+  snapshot.fusedKneeDeg = fused.valid ? fused.fusedAngleDeg : imuKneeAngle;
+  snapshot.fusedImuWeight = fused.imuWeight;
+  snapshot.fusedFlexWeight = fused.flexWeight;
+  snapshot.fusedPotWeight = fused.potWeight;
   snapshot.flexRawAdc = flex.rawAdc;
   snapshot.flexAngleDeg = flex.angleDeg;
   snapshot.potRawAdc = pot.rawAdc;
+  snapshot.potFilteredAdc = pot.filteredAdc;
+  snapshot.potVoltage = pot.voltage;
   snapshot.potAngleDeg = pot.angleDeg;
   return snapshot;
 }
@@ -126,13 +152,17 @@ RuntimeSnapshot makeSnapshot() {
 void printHeader() {
   Serial.println();
   Serial.println(F("# Simple master baseline"));
-  Serial.println(F("# Features: local IMU, slave BLE link, flex D0, pot D2, phone BLE"));
+  Serial.println(F("# Features: local IMU, slave BLE link, flex D0, pot D2, phone BLE, sensor fusion"));
   Serial.print(F("# Phone device name: "));
   Serial.println(MasterConfig::kPhoneBleDeviceName);
   Serial.print(F("# Phone service UUID: "));
   Serial.println(KneePhoneBle::kPhoneServiceUuid);
-  Serial.println(F("# Commands: h, z, r, x/reset"));
-  Serial.println(F("# Output: SIMPLE,time_ms,master_imu_deg,slave_imu_deg,knee_imu_deg,flex_raw_adc,flex_angle_deg,pot_raw_adc,pot_angle_deg,ble_state"));
+  Serial.println(F("# Commands: h, z, r, x/reset, or any numeric angle 0..145 for POT calibration labels"));
+  Serial.println(F("# Fusion weights: IMU=0.475 POT=0.475 FLEX=0.05"));
+  Serial.print(F("# Primary IMU axis: "));
+  Serial.println(MasterConfig::kUsePitchAsPrimaryAxis ? F("PITCH") : F("ROLL"));
+  Serial.println(F("# Phone telemetry profile: final-angle only (currently IMU knee)"));
+  Serial.println(F("# Output: SIMPLE,time_ms,master_imu_deg,slave_imu_deg,knee_imu_deg,fused_knee_deg,flex_raw_adc,flex_angle_deg,pot_raw_adc,pot_angle_deg,ble_state"));
 }
 
 void captureZeroReference() {
@@ -147,6 +177,61 @@ void clearZeroReference() {
   zeroReferences.slaveImuDeg = 0.0f;
   zeroReferences.applied = false;
   Serial.println(F("# Zero reference cleared."));
+}
+
+bool tryParsePotCalibrationAngle(const char* command, float& angleDeg) {
+  char* end_ptr = nullptr;
+  const float parsed = strtof(command, &end_ptr);
+  if (end_ptr == command || *end_ptr != '\0') {
+    return false;
+  }
+  if (!isfinite(parsed)) {
+    return false;
+  }
+  if (parsed < MasterConfig::kKneeAngleMinDeg || parsed > MasterConfig::kKneeAngleMaxDeg) {
+    return false;
+  }
+  angleDeg = parsed;
+  return true;
+}
+
+void endPotCalibrationLabel(uint32_t nowMs) {
+  if (!potCalibrationLabelActive) {
+    return;
+  }
+
+  Serial.print(F("LABEL_END,"));
+  Serial.print(nowMs);
+  Serial.print(F(","));
+  Serial.println(potCalibrationLabelDeg, 1);
+  potCalibrationLabelActive = false;
+}
+
+void startPotCalibrationLabel(float angleDeg, uint32_t nowMs) {
+  if (potCalibrationLabelActive) {
+    endPotCalibrationLabel(nowMs);
+  }
+
+  potCalibrationLabelActive = true;
+  potCalibrationLabelDeg = angleDeg;
+  potCalibrationLabelEndMs = nowMs + MasterConfig::kPotCalibrationCaptureWindowMs;
+
+  Serial.print(F("LABEL_START,"));
+  Serial.print(nowMs);
+  Serial.print(F(","));
+  Serial.print(angleDeg, 1);
+  Serial.print(F(","));
+  Serial.println(MasterConfig::kPotCalibrationCaptureWindowMs);
+}
+
+void updatePotCalibrationLabel(uint32_t nowMs) {
+  if (!potCalibrationLabelActive) {
+    return;
+  }
+
+  if (static_cast<int32_t>(nowMs - potCalibrationLabelEndMs) >= 0) {
+    endPotCalibrationLabel(nowMs);
+  }
 }
 
 void resetBoard() {
@@ -230,7 +315,15 @@ void handleCommand(const char* command) {
     return;
   }
 
-  Serial.println(F("# Ignored command. Use h, z, r, or x/reset."));
+  float calibrationAngleDeg = 0.0f;
+  if (tryParsePotCalibrationAngle(command, calibrationAngleDeg)) {
+    startPotCalibrationLabel(calibrationAngleDeg, millis());
+    Serial.print(F("# POT calibration label accepted: "));
+    Serial.println(calibrationAngleDeg, 1);
+    return;
+  }
+
+  Serial.println(F("# Ignored command. Use h, z, r, x/reset, or a numeric angle label."));
 }
 
 void handleSerialCommands() {
@@ -281,6 +374,8 @@ void printSimpleLine(const RuntimeSnapshot& snapshot) {
   Serial.print(F(","));
   Serial.print(snapshot.kneeImuDeg, 2);
   Serial.print(F(","));
+  Serial.print(snapshot.fusedKneeDeg, 2);
+  Serial.print(F(","));
   Serial.print(snapshot.flexRawAdc);
   Serial.print(F(","));
   Serial.print(snapshot.flexAngleDeg, 2);
@@ -290,6 +385,25 @@ void printSimpleLine(const RuntimeSnapshot& snapshot) {
   Serial.print(snapshot.potAngleDeg, 2);
   Serial.print(F(","));
   Serial.println(bleCentral.stateText());
+}
+
+void printPotCalibrationLine(const RuntimeSnapshot& snapshot) {
+  Serial.print(F("POT_SAMPLE,"));
+  Serial.print(millis());
+  Serial.print(F(","));
+  Serial.print(snapshot.potRawAdc);
+  Serial.print(F(","));
+  Serial.print(snapshot.potFilteredAdc, 2);
+  Serial.print(F(","));
+  Serial.print(snapshot.potVoltage, 4);
+  Serial.print(F(","));
+  Serial.print(snapshot.potAngleDeg, 2);
+  Serial.print(F(","));
+  if (potCalibrationLabelActive) {
+    Serial.println(potCalibrationLabelDeg, 1);
+  } else {
+    Serial.println(F("nan"));
+  }
 }
 
 void printDebugHeartbeat(const RuntimeSnapshot& snapshot) {
@@ -307,6 +421,14 @@ void printDebugHeartbeat(const RuntimeSnapshot& snapshot) {
   Serial.print(snapshot.slaveImuDeg, 2);
   Serial.print(F(",knee="));
   Serial.print(snapshot.kneeImuDeg, 2);
+  Serial.print(F(",fused="));
+  Serial.print(snapshot.fusedKneeDeg, 2);
+  Serial.print(F(",w_imu="));
+  Serial.print(snapshot.fusedImuWeight, 3);
+  Serial.print(F(",w_flex="));
+  Serial.print(snapshot.fusedFlexWeight, 3);
+  Serial.print(F(",w_pot="));
+  Serial.print(snapshot.fusedPotWeight, 3);
   Serial.print(F(",loops="));
   Serial.print(loopCount);
   Serial.print(F(",cen="));
@@ -348,19 +470,9 @@ KneePhoneBle::TelemetryPacketV1 makePhoneTelemetryPacket(const RuntimeSnapshot& 
   if (zeroReferences.applied) {
     packet.flags |= KneePhoneBle::kFlagImuZeroed;
   }
-  if (flexSensor.reading().valid) {
-    packet.flags |= KneePhoneBle::kFlagFlexValid;
-  }
-  packet.flags |= KneePhoneBle::kFlagPotValid;
   packet.sequence = phoneTelemetrySequence++;
   packet.uptimeMs = millis();
-  packet.masterImuDeg = snapshot.masterImuDeg;
-  packet.slaveImuDeg = snapshot.slaveImuDeg;
-  packet.imuKneeDeg = snapshot.kneeImuDeg;
-  packet.flexRawAdc = snapshot.flexRawAdc;
-  packet.flexAngleDeg = snapshot.flexAngleDeg;
-  packet.potRawAdc = snapshot.potRawAdc;
-  packet.potAngleDeg = snapshot.potAngleDeg;
+  packet.finalAngleDeg = snapshot.kneeImuDeg;
   return packet;
 }
 
@@ -375,10 +487,6 @@ KneePhoneBle::StatusPacketV1 makePhoneStatusPacket(uint16_t lastSequence) {
   if (zeroReferences.applied) {
     packet.flags |= KneePhoneBle::kFlagImuZeroed;
   }
-  if (flexSensor.reading().valid) {
-    packet.flags |= KneePhoneBle::kFlagFlexValid;
-  }
-  packet.flags |= KneePhoneBle::kFlagPotValid;
   packet.lastSequence = lastSequence;
   packet.uptimeMs = millis();
   return packet;
@@ -445,6 +553,7 @@ void loop() {
   ++phonePollCount;
   setPhase("WDOG");
   updateConnectionWatchdog(nowMs);
+  updatePotCalibrationLabel(nowMs);
   setPhase("SER");
   handleSerialCommands();
   setPhase("CMD");
@@ -472,6 +581,7 @@ void loop() {
     setPhase("DASH");
     lastDashboardMs = nowMs;
     printSimpleLine(snapshot);
+    printPotCalibrationLine(snapshot);
     ++dashboardPrintCount;
   }
 

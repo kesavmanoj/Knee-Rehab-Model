@@ -288,3 +288,113 @@ class TripleTraceCanvas(tk.Canvas):
         self.create_text(width - 132, 16, text=self.trace_b_name, fill="#d8dde5", font=("Segoe UI", 9))
         self.create_line(width - 92, 16, width - 70, 16, fill=self.trace_c_color, width=3)
         self.create_text(width - 32, 16, text=self.trace_c_name, fill="#d8dde5", font=("Segoe UI", 9))
+
+
+class QuadTraceCanvas(tk.Canvas):
+    def __init__(
+        self,
+        master,
+        width=900,
+        height=300,
+        max_points=240,
+        y_min=0.0,
+        y_max=145.0,
+        trace_a_name="Flex Angle",
+        trace_a_color="#46d676",
+        trace_b_name="POT Angle",
+        trace_b_color="#53c7ff",
+        trace_c_name="IMU Angle",
+        trace_c_color="#ffb84d",
+        trace_d_name="Fused Angle",
+        trace_d_color="#ff6b6b",
+        **kwargs,
+    ):
+        super().__init__(master, width=width, height=height, bg="#111418", highlightthickness=1, highlightbackground="#2b2f36", **kwargs)
+        self.max_points = max_points
+        self.y_min = y_min
+        self.y_max = y_max
+        self.trace_a_name = trace_a_name
+        self.trace_a_color = trace_a_color
+        self.trace_b_name = trace_b_name
+        self.trace_b_color = trace_b_color
+        self.trace_c_name = trace_c_name
+        self.trace_c_color = trace_c_color
+        self.trace_d_name = trace_d_name
+        self.trace_d_color = trace_d_color
+        self.trace_a = deque(maxlen=max_points)
+        self.trace_b = deque(maxlen=max_points)
+        self.trace_c = deque(maxlen=max_points)
+        self.trace_d = deque(maxlen=max_points)
+        self.bind("<Configure>", lambda event: self.redraw())
+
+    def clear(self):
+        self.trace_a.clear()
+        self.trace_b.clear()
+        self.trace_c.clear()
+        self.trace_d.clear()
+        self.redraw()
+
+    def add_sample(self, trace_a_value: float, trace_b_value: float, trace_c_value: float, trace_d_value: float):
+        self.trace_a.append(trace_a_value)
+        self.trace_b.append(trace_b_value)
+        self.trace_c.append(trace_c_value)
+        self.trace_d.append(trace_d_value)
+        self.redraw()
+
+    def redraw(self):
+        self.delete("all")
+        width = max(1, self.winfo_width())
+        height = max(1, self.winfo_height())
+
+        self._draw_grid(width, height)
+        self._draw_trace(width, height, self.trace_a, self.trace_a_color)
+        self._draw_trace(width, height, self.trace_b, self.trace_b_color)
+        self._draw_trace(width, height, self.trace_c, self.trace_c_color)
+        self._draw_trace(width, height, self.trace_d, self.trace_d_color)
+        self._draw_axes_text(width, height)
+        self._draw_legend(width)
+
+    def _draw_grid(self, width: int, height: int):
+        grid_color = "#28303a"
+        for i in range(1, 5):
+            y = int((height - 24) * i / 5)
+            self.create_line(40, y, width - 10, y, fill=grid_color)
+
+    def _draw_trace(self, width: int, height: int, samples: deque, color: str):
+        if len(samples) < 2:
+            return
+
+        plot_left = 40
+        plot_right = width - 10
+        plot_top = 10
+        plot_bottom = height - 24
+        plot_width = max(1, plot_right - plot_left)
+        plot_height = max(1, plot_bottom - plot_top)
+
+        points = []
+        for index, value in enumerate(samples):
+            x = plot_left + (index / max(1, self.max_points - 1)) * plot_width
+            normalized = (value - self.y_min) / max(1e-6, self.y_max - self.y_min)
+            normalized = min(1.0, max(0.0, normalized))
+            y = plot_bottom - (normalized * plot_height)
+            points.extend([x, y])
+
+        self.create_line(*points, fill=color, width=2.0, smooth=True)
+
+    def _draw_axes_text(self, width: int, height: int):
+        self.create_text(20, 12, text=f"{self.y_max:.0f}", fill="#a7b0bb", font=("Segoe UI", 9))
+        self.create_text(20, height - 24, text=f"{self.y_min:.0f}", fill="#a7b0bb", font=("Segoe UI", 9))
+        self.create_text(width - 60, height - 8, text="recent", fill="#7f8892", font=("Segoe UI", 9))
+
+    def _draw_legend(self, width: int):
+        x = width - 440
+        entries = [
+            (self.trace_a_color, self.trace_a_name),
+            (self.trace_b_color, self.trace_b_name),
+            (self.trace_c_color, self.trace_c_name),
+            (self.trace_d_color, self.trace_d_name),
+        ]
+        for color, name in entries:
+            self.create_line(x, 16, x + 22, 16, fill=color, width=3)
+            self.create_text(x + 68, 16, text=name, fill="#d8dde5", font=("Segoe UI", 9))
+            x += 108

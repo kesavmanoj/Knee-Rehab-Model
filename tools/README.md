@@ -9,6 +9,8 @@ This folder contains the PC-side tooling used to:
 - generate runtime calibration coefficients for firmware
 - monitor live flex, POT, and IMU angles
 
+These tools are still kept in the repo, but the active embedded runtime has been simplified and no longer depends on every calibration stage all the time.
+
 ## Structure
 
 ```text
@@ -26,7 +28,7 @@ Everything currently lives under:
 
 Launch:
 
-- [launch_pot_calibration_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launch_pot_calibration_gui.bat)
+- [launch_pot_calibration_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launchers/launch_pot_calibration_gui.bat)
 
 GUI:
 
@@ -45,7 +47,7 @@ What it does:
 
 Launch:
 
-- [launch_flex_calibration_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launch_flex_calibration_gui.bat)
+- [launch_flex_calibration_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launchers/launch_flex_calibration_gui.bat)
 
 GUI:
 
@@ -64,7 +66,7 @@ What it does:
 
 Launch:
 
-- [launch_imu_calibration_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launch_imu_calibration_gui.bat)
+- [launch_imu_calibration_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launchers/launch_imu_calibration_gui.bat)
 
 GUI:
 
@@ -91,7 +93,7 @@ Important current project decision:
 
 Launch:
 
-- [launch_runtime_monitor_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launch_runtime_monitor_gui.bat)
+- [launch_runtime_monitor_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launchers/launch_runtime_monitor_gui.bat)
 
 GUI:
 
@@ -112,7 +114,7 @@ What it does:
 
 Launch:
 
-- [generate_runtime_calibration.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/generate_runtime_calibration.bat)
+- [generate_runtime_calibration.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launchers/generate_runtime_calibration.bat)
 
 Script:
 

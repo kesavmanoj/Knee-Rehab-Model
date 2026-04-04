@@ -18,8 +18,6 @@ enum TelemetryFlags : uint8_t {
   kFlagSlaveConnected = 1 << 0,
   kFlagImuZeroed = 1 << 1,
   kFlagImuValid = 1 << 2,
-  kFlagFlexValid = 1 << 3,
-  kFlagPotValid = 1 << 4,
 };
 
 enum CommandId : uint8_t {
@@ -36,15 +34,10 @@ struct TelemetryPacketV1 {
   uint16_t sequence;
   uint32_t uptimeMs;
 
-  float masterImuDeg;
-  float slaveImuDeg;
-  float imuKneeDeg;
-
-  uint16_t flexRawAdc;
-  float flexAngleDeg;
-
-  uint16_t potRawAdc;
-  float potAngleDeg;
+  // Phone-facing angle output. It is IMU knee angle for now, but this stays
+  // intentionally generic so it can later be switched to fused output without
+  // redesigning the BLE service.
+  float finalAngleDeg;
 };
 
 struct CommandPacketV1 {
@@ -62,7 +55,7 @@ struct StatusPacketV1 {
 
 #pragma pack(pop)
 
-static_assert(sizeof(TelemetryPacketV1) == 32, "Unexpected TelemetryPacketV1 size");
+static_assert(sizeof(TelemetryPacketV1) == 12, "Unexpected TelemetryPacketV1 size");
 static_assert(sizeof(CommandPacketV1) == 6, "Unexpected CommandPacketV1 size");
 static_assert(sizeof(StatusPacketV1) == 8, "Unexpected StatusPacketV1 size");
 

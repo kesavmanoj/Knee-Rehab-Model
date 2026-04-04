@@ -19,7 +19,7 @@ static constexpr float kComplementaryAlphaMoving = 0.985f;
 static constexpr float kComplementaryAlphaSettled = 0.90f;
 static constexpr float kGyroQuietThresholdDps = 8.0f;
 static constexpr float kGyroFastThresholdDps = 60.0f;
-static constexpr bool kUsePitchAsPrimaryAxis = false;
+static constexpr bool kUsePitchAsPrimaryAxis = true;
 
 // Mounting correction terms. Adjust signs once the boards are physically mounted.
 static constexpr float kPitchSign = 1.0f;

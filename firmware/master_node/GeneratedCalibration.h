@@ -2,10 +2,10 @@
 
 namespace GeneratedCalibration {
 
-static constexpr char kPotSourceSession[] = "pot_session_20260331_191852";
-static constexpr float kPotRawAdcSlope = 0.066298363454f;
-static constexpr float kPotRawAdcIntercept = -10.941682176146f;
-static constexpr float kPotFitRmseDeg = 0.553146395303f;
+static constexpr char kPotSourceSession[] = "pot_session_20260404_144309";
+static constexpr float kPotRawAdcSlope = 0.066327975461f;
+static constexpr float kPotRawAdcIntercept = -8.488752563215f;
+static constexpr float kPotFitRmseDeg = 0.000000000000f;
 
 static constexpr char kFlexSourceSession[] = "flex_session_20260331_201536";
 static constexpr int kFlexSelectedPolynomialDegree = 2;

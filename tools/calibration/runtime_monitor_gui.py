@@ -4,7 +4,7 @@ import queue
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from plot_widgets import TripleTraceCanvas
+from plot_widgets import QuadTraceCanvas
 from runtime_monitor_session import RuntimeMonitorSession, list_serial_ports
 from runtime_serial_protocol import RuntimeSensorSample
 
@@ -12,7 +12,7 @@ from runtime_serial_protocol import RuntimeSensorSample
 class RuntimeMonitorGui:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Flex + POT Runtime Monitor")
+        self.root.title("Live Angle Runtime Monitor")
         self.root.geometry("1040x760")
         self.root.minsize(900, 620)
 
@@ -30,15 +30,30 @@ class RuntimeMonitorGui:
         self.master_imu_var = tk.StringVar(value="-")
         self.slave_imu_var = tk.StringVar(value="-")
         self.imu_angle_var = tk.StringVar(value="-")
+        self.fused_angle_var = tk.StringVar(value="-")
         self.sample_count_var = tk.StringVar(value="0")
 
         self._build_ui()
         self.refresh_ports()
-        self.root.after(100, self._poll_queue)
+        self.root.after(33, self._poll_queue)
 
     def _build_ui(self):
-        main = ttk.Frame(self.root, padding=12)
-        main.pack(fill="both", expand=True)
+        container = ttk.Frame(self.root)
+        container.pack(fill="both", expand=True)
+
+        self.scroll_canvas = tk.Canvas(container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=self.scroll_canvas.yview)
+        self.scroll_canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side="right", fill="y")
+        self.scroll_canvas.pack(side="left", fill="both", expand=True)
+
+        main = ttk.Frame(self.scroll_canvas, padding=12)
+        self.scroll_window = self.scroll_canvas.create_window((0, 0), window=main, anchor="nw")
+
+        main.bind("<Configure>", self._on_main_frame_configure)
+        self.scroll_canvas.bind("<Configure>", self._on_canvas_configure)
+        self.scroll_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
 
         connection = ttk.LabelFrame(main, text="Connection", padding=10)
         connection.pack(fill="x")
@@ -64,17 +79,20 @@ class RuntimeMonitorGui:
         self._add_reading_row(live, 5, "Master IMU", self.master_imu_var)
         self._add_reading_row(live, 6, "Slave IMU", self.slave_imu_var)
         self._add_reading_row(live, 7, "IMU Knee Angle", self.imu_angle_var)
-        self._add_reading_row(live, 8, "Samples Received", self.sample_count_var)
+        self._add_reading_row(live, 8, "Fused Angle", self.fused_angle_var)
+        self._add_reading_row(live, 9, "Samples Received", self.sample_count_var)
 
-        graph = ttk.LabelFrame(main, text="Converted Angle Graph", padding=10)
+        graph = ttk.LabelFrame(main, text="Live Angle Graph", padding=10)
         graph.pack(fill="both", expand=True, pady=(12, 0))
-        self.trace_canvas = TripleTraceCanvas(
+        self.trace_canvas = QuadTraceCanvas(
             graph,
+            max_points=160,
             y_min=0.0,
             y_max=145.0,
             trace_a_name="Flex Angle",
             trace_b_name="POT Angle",
             trace_c_name="IMU Angle",
+            trace_d_name="Fused Angle",
         )
         self.trace_canvas.pack(fill="both", expand=True)
 
@@ -82,6 +100,16 @@ class RuntimeMonitorGui:
         logs.pack(fill="both", expand=True, pady=(12, 0))
         self.log_text = tk.Text(logs, height=10, wrap="word")
         self.log_text.pack(fill="both", expand=True)
+
+    def _on_main_frame_configure(self, _event=None):
+        self.scroll_canvas.configure(scrollregion=self.scroll_canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event):
+        self.scroll_canvas.itemconfigure(self.scroll_window, width=event.width)
+
+    def _on_mousewheel(self, event):
+        if self.scroll_canvas.winfo_exists():
+            self.scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _add_reading_row(self, parent, row: int, label: str, value_var: tk.StringVar):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", padx=(0, 12), pady=3)
@@ -151,7 +179,7 @@ class RuntimeMonitorGui:
             elif kind == "status":
                 self.status_var.set(payload.title())
 
-        self.root.after(100, self._poll_queue)
+        self.root.after(33, self._poll_queue)
 
     def _handle_sample(self, sample: RuntimeSensorSample):
         self.flex_raw_var.set(str(sample.flex_raw_adc))
@@ -161,9 +189,15 @@ class RuntimeMonitorGui:
         self.master_imu_var.set("-" if sample.master_imu_deg is None else f"{sample.master_imu_deg:.2f} deg")
         self.slave_imu_var.set("-" if sample.slave_imu_deg is None else f"{sample.slave_imu_deg:.2f} deg")
         self.imu_angle_var.set("-" if sample.imu_angle_deg is None else f"{sample.imu_angle_deg:.2f} deg")
+        self.fused_angle_var.set("-" if sample.fused_angle_deg is None else f"{sample.fused_angle_deg:.2f} deg")
         self.sample_count += 1
         self.sample_count_var.set(str(self.sample_count))
-        self.trace_canvas.add_sample(sample.flex_angle_deg, sample.pot_angle_deg, sample.imu_angle_deg or 0.0)
+        self.trace_canvas.add_sample(
+            sample.flex_angle_deg,
+            sample.pot_angle_deg,
+            sample.imu_angle_deg or 0.0,
+            sample.fused_angle_deg or 0.0,
+        )
 
     def _append_log(self, text: str):
         self.log_text.insert("end", text + "\n")

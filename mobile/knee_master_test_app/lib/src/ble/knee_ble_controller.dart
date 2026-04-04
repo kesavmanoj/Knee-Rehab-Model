@@ -8,6 +8,18 @@ import 'knee_ble_contract.dart';
 import 'knee_command.dart';
 import 'knee_telemetry.dart';
 
+class AngleHistorySample {
+  const AngleHistorySample({
+    required this.receivedAt,
+    required this.uptimeMs,
+    required this.angleDeg,
+  });
+
+  final DateTime receivedAt;
+  final int uptimeMs;
+  final double angleDeg;
+}
+
 class KneeBleController extends ChangeNotifier {
   KneeBleController({
     FlutterReactiveBle? ble,
@@ -29,6 +41,7 @@ class KneeBleController extends ChangeNotifier {
   Timer? _telemetryPollTimer;
 
   final List<DiscoveredDevice> _devices = <DiscoveredDevice>[];
+  final List<AngleHistorySample> _recentAngles = <AngleHistorySample>[];
   BleStatus bleStatus = BleStatus.unknown;
   bool permissionsGranted = false;
   bool isScanning = false;
@@ -44,9 +57,34 @@ class KneeBleController extends ChangeNotifier {
   String? lastError;
 
   List<DiscoveredDevice> get devices => List.unmodifiable(_devices);
+  List<AngleHistorySample> get recentAngles => List.unmodifiable(_recentAngles);
 
   bool get isConnected => connectionState == DeviceConnectionState.connected;
   bool get canSendCommands => isConnected;
+  double? get currentAngleDeg => telemetry?.finalAngleDeg;
+  bool get isSensorStale => isConnected && !hasFreshTelemetry;
+  bool get hasFreshTelemetry {
+    final stamp = lastTelemetryAt;
+    if (stamp == null) {
+      return false;
+    }
+    return DateTime.now().difference(stamp) < const Duration(seconds: 1);
+  }
+  String get connectionSummary {
+    if (isConnecting) {
+      return 'Connecting';
+    }
+    if (isConnected && hasFreshTelemetry) {
+      return 'Connected';
+    }
+    if (isSensorStale) {
+      return 'Sensor stale';
+    }
+    if (isScanning) {
+      return 'Searching';
+    }
+    return 'Disconnected';
+  }
 
   Future<void> requestPermissions() async {
     final result = await _permissions.requestForBle();
@@ -155,6 +193,11 @@ class KneeBleController extends ChangeNotifier {
     connectionState = DeviceConnectionState.disconnected;
     connectedDeviceId = null;
     connectedDeviceName = null;
+    telemetry = null;
+    status = null;
+    lastTelemetryAt = null;
+    lastTelemetryPayloadLength = null;
+    _recentAngles.clear();
     notifyListeners();
   }
 
@@ -209,7 +252,7 @@ class KneeBleController extends ChangeNotifier {
     }
 
     await _readTelemetryOnce(deviceId);
-    _telemetryPollTimer = Timer.periodic(const Duration(milliseconds: 100), (
+    _telemetryPollTimer = Timer.periodic(const Duration(milliseconds: 50), (
       _,
     ) async {
       if (!isConnected || connectedDeviceId != deviceId) {
@@ -262,6 +305,17 @@ class KneeBleController extends ChangeNotifier {
       lastTelemetryPayloadLength = telemetryPayload.length;
       telemetry = KneeTelemetryPacket.fromBytes(telemetryPayload);
       lastTelemetryAt = DateTime.now();
+      _recentAngles.add(
+        AngleHistorySample(
+          receivedAt: lastTelemetryAt!,
+          uptimeMs: telemetry!.uptimeMs,
+          angleDeg: telemetry!.finalAngleDeg,
+        ),
+      );
+      const int maxSamples = 300;
+      if (_recentAngles.length > maxSamples) {
+        _recentAngles.removeRange(0, _recentAngles.length - maxSamples);
+      }
       lastError = null;
       notifyListeners();
     } catch (error) {
