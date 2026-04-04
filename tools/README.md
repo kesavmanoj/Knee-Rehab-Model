@@ -11,6 +11,12 @@ This folder contains the PC-side tooling used to:
 
 These tools are still kept in the repo, but the active embedded runtime has been simplified and no longer depends on every calibration stage all the time.
 
+Important current behavior:
+
+- the master firmware now supports dedicated serial stream profiles
+- each calibration GUI automatically switches the board into the correct stream mode when the session starts
+- when the session stops, the tool switches the board back to normal serial mode
+
 ## Structure
 
 ```text
@@ -37,6 +43,7 @@ GUI:
 What it does:
 
 - connects to the master serial port
+- automatically switches the board to `stream pot`
 - listens for `POT_SAMPLE,...`
 - shows live raw ADC, filtered ADC, voltage, and mapped POT angle
 - lets you stamp angle labels
@@ -56,6 +63,7 @@ GUI:
 What it does:
 
 - connects to the same unified master serial stream
+- automatically switches the board to `stream flex`
 - listens for `FLEX_SAMPLE,...`
 - shows live flex raw ADC, filtered ADC, voltage, resistance, and mapped angle
 - lets you stamp labels
@@ -74,6 +82,7 @@ GUI:
 
 What it does:
 
+- automatically switches the board to `stream imu`
 - listens for `IMU_SAMPLE,...`
 - shows:
   - master IMU angle
@@ -101,7 +110,8 @@ GUI:
 
 What it does:
 
-- listens for `RUNTIME_SAMPLE,...`
+- automatically switches the board to `stream runtime`
+- listens for `SIMPLE,...`
 - shows:
   - flex raw ADC and angle
   - POT raw ADC and angle
@@ -200,7 +210,7 @@ Responsibilities:
 
 Responsibilities:
 
-- parse `RUNTIME_SAMPLE`
+- parse `SIMPLE`
 - ignore calibration traffic
 - display the live multi-sensor state
 
@@ -257,3 +267,18 @@ This layout is meant to make future additions easier, for example:
 - fused-angle calibration
 - repetition annotations
 - exercise window labeling
+
+## Active Tool Set
+
+Current supported user-facing launchers:
+
+- [launch_pot_calibration_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launchers/launch_pot_calibration_gui.bat)
+- [launch_flex_calibration_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launchers/launch_flex_calibration_gui.bat)
+- [launch_imu_calibration_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launchers/launch_imu_calibration_gui.bat)
+- [launch_runtime_monitor_gui.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launchers/launch_runtime_monitor_gui.bat)
+- [generate_runtime_calibration.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launchers/generate_runtime_calibration.bat)
+
+Removed redundant extras:
+
+- duplicate runtime launcher
+- old CLI-only live POT logger

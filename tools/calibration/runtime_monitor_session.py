@@ -44,6 +44,7 @@ class RuntimeMonitorSession:
     def start(self):
         self.serial_port = serial.Serial(self.port, baudrate=self.baud, timeout=0.2)
         time.sleep(2.0)
+        self._send_control_command("stream runtime")
 
         self._stop_event.clear()
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
@@ -56,6 +57,7 @@ class RuntimeMonitorSession:
         self._stop_event.set()
         if self._reader_thread is not None:
             self._reader_thread.join(timeout=2.0)
+        self._send_control_command("stream normal")
         if self.serial_port is not None and self.serial_port.is_open:
             self.serial_port.close()
         self._emit_status("stopped")
@@ -98,3 +100,13 @@ class RuntimeMonitorSession:
     def _emit_status(self, status: str):
         for callback in self._status_callbacks:
             callback(status)
+
+    def _send_control_command(self, command: str):
+        if self.serial_port is None or not self.serial_port.is_open:
+            return
+        try:
+            self.serial_port.write((command + "\n").encode("utf-8"))
+            self.serial_port.flush()
+            self._emit_log(f"[runtime] sent command: {command}")
+        except serial.SerialException as exc:
+            self._emit_log(f"[runtime] failed to send command '{command}': {exc}")

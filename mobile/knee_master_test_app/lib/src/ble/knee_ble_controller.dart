@@ -21,6 +21,9 @@ class AngleHistorySample {
 }
 
 class KneeBleController extends ChangeNotifier {
+  static const Duration _telemetryPollInterval = Duration(milliseconds: 75);
+  static const Duration _commandQuietWindow = Duration(milliseconds: 150);
+
   KneeBleController({
     FlutterReactiveBle? ble,
     BlePermissions? permissions,
@@ -252,7 +255,7 @@ class KneeBleController extends ChangeNotifier {
     }
 
     await _readTelemetryOnce(deviceId);
-    _telemetryPollTimer = Timer.periodic(const Duration(milliseconds: 50), (
+    _telemetryPollTimer = Timer.periodic(_telemetryPollInterval, (
       _,
     ) async {
       if (!isConnected || connectedDeviceId != deviceId) {
@@ -279,14 +282,32 @@ class KneeBleController extends ChangeNotifier {
       return;
     }
 
+    final pollWasRunning = _telemetryPollTimer != null;
+    if (pollWasRunning) {
+      await _clearCharacteristicSubscriptions();
+    }
+
     try {
       await _ble.writeCharacteristicWithResponse(
         _commandCharacteristic(deviceId),
         value: packet.toBytes(),
       );
+      await Future<void>.delayed(_commandQuietWindow);
+      if (isConnected && connectedDeviceId == deviceId) {
+        await _readTelemetryOnce(deviceId);
+      }
       lastError = null;
     } catch (error) {
       lastError = 'Command write failed: $error';
+    } finally {
+      if (pollWasRunning && isConnected && connectedDeviceId == deviceId) {
+        _telemetryPollTimer = Timer.periodic(_telemetryPollInterval, (_) async {
+          if (!isConnected || connectedDeviceId != deviceId) {
+            return;
+          }
+          await _readTelemetryOnce(deviceId);
+        });
+      }
     }
 
     notifyListeners();

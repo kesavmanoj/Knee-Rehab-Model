@@ -38,6 +38,14 @@ struct RuntimeSnapshot {
   float potAngleDeg;
 };
 
+enum class SerialStreamMode : uint8_t {
+  kNormal = 0,
+  kRuntime = 1,
+  kPotCalibration = 2,
+  kFlexCalibration = 3,
+  kImuCalibration = 4,
+};
+
 SegmentOrientationEstimator thighImu;
 BleCentralManager bleCentral;
 OledDisplayManager oledDisplay;
@@ -59,7 +67,6 @@ uint32_t lastAnalogSampleMs = 0;
 uint32_t lastDashboardMs = 0;
 uint32_t lastOledUpdateMs = 0;
 uint32_t lastPhoneTelemetryMs = 0;
-uint32_t lastDebugHeartbeatMs = 0;
 uint16_t phoneTelemetrySequence = 0;
 uint32_t recoveryStartedMs = 0;
 uint32_t connectedSinceMs = 0;
@@ -67,23 +74,32 @@ bool lastSlaveLinkHealthy = false;
 uint8_t recoveryDisconnectCount = 0;
 const char* currentPhase = "BOOT";
 
-uint32_t loopCount = 0;
-uint32_t centralPollCount = 0;
-uint32_t phonePollCount = 0;
-uint32_t imuUpdateCount = 0;
-uint32_t analogUpdateCount = 0;
-uint32_t dashboardPrintCount = 0;
-uint32_t oledRenderCount = 0;
-uint32_t oledRecoverCount = 0;
-uint32_t oledTimeoutCount = 0;
-uint32_t phoneTxBeginCount = 0;
-uint32_t phoneTxEndCount = 0;
-uint32_t phoneTxFailCount = 0;
-uint32_t serialCommandCount = 0;
-uint32_t phoneCommandCount = 0;
 bool potCalibrationLabelActive = false;
 float potCalibrationLabelDeg = 0.0f;
 uint32_t potCalibrationLabelEndMs = 0;
+SerialStreamMode serialStreamMode = SerialStreamMode::kNormal;
+
+unsigned long currentDashboardIntervalMs() {
+  return serialStreamMode == SerialStreamMode::kNormal
+             ? MasterConfig::kDashboardIntervalNormalMs
+             : MasterConfig::kDashboardIntervalFastMs;
+}
+
+const __FlashStringHelper* serialStreamModeLabel() {
+  switch (serialStreamMode) {
+    case SerialStreamMode::kRuntime:
+      return F("RUNTIME");
+    case SerialStreamMode::kPotCalibration:
+      return F("POT_CAL");
+    case SerialStreamMode::kFlexCalibration:
+      return F("FLEX_CAL");
+    case SerialStreamMode::kImuCalibration:
+      return F("IMU_CAL");
+    case SerialStreamMode::kNormal:
+    default:
+      return F("NORMAL");
+  }
+}
 
 void setPhase(const char* phase) {
   currentPhase = phase;
@@ -157,11 +173,13 @@ void printHeader() {
   Serial.println(MasterConfig::kPhoneBleDeviceName);
   Serial.print(F("# Phone service UUID: "));
   Serial.println(KneePhoneBle::kPhoneServiceUuid);
-  Serial.println(F("# Commands: h, z, r, x/reset, or any numeric angle 0..145 for POT calibration labels"));
+  Serial.println(F("# Commands: h, z, r, x/reset, mode normal, mode fast, stream runtime, stream pot, stream flex, stream imu, or any numeric angle 0..145 for labels"));
   Serial.println(F("# Fusion weights: IMU=0.475 POT=0.475 FLEX=0.05"));
   Serial.print(F("# Primary IMU axis: "));
   Serial.println(MasterConfig::kUsePitchAsPrimaryAxis ? F("PITCH") : F("ROLL"));
   Serial.println(F("# Phone telemetry profile: final-angle only (currently IMU knee)"));
+  Serial.print(F("# Serial stream mode: "));
+  Serial.println(serialStreamModeLabel());
   Serial.println(F("# Output: SIMPLE,time_ms,master_imu_deg,slave_imu_deg,knee_imu_deg,fused_knee_deg,flex_raw_adc,flex_angle_deg,pot_raw_adc,pot_angle_deg,ble_state"));
 }
 
@@ -292,8 +310,38 @@ void updateConnectionWatchdog(uint32_t nowMs) {
   }
 }
 
+bool trySetSerialStreamMode(const char* command) {
+  if (strcmp(command, "mode fast") == 0 || strcmp(command, "fast") == 0 ||
+      strcmp(command, "stream runtime") == 0 || strcmp(command, "runtime") == 0) {
+    serialStreamMode = SerialStreamMode::kRuntime;
+    Serial.println(F("# Serial stream mode set to RUNTIME."));
+    return true;
+  }
+  if (strcmp(command, "stream pot") == 0 || strcmp(command, "pot") == 0) {
+    serialStreamMode = SerialStreamMode::kPotCalibration;
+    Serial.println(F("# Serial stream mode set to POT_CAL."));
+    return true;
+  }
+  if (strcmp(command, "stream flex") == 0 || strcmp(command, "flex") == 0) {
+    serialStreamMode = SerialStreamMode::kFlexCalibration;
+    Serial.println(F("# Serial stream mode set to FLEX_CAL."));
+    return true;
+  }
+  if (strcmp(command, "stream imu") == 0 || strcmp(command, "imu") == 0) {
+    serialStreamMode = SerialStreamMode::kImuCalibration;
+    Serial.println(F("# Serial stream mode set to IMU_CAL."));
+    return true;
+  }
+  if (strcmp(command, "mode normal") == 0 || strcmp(command, "normal") == 0 ||
+      strcmp(command, "stream normal") == 0) {
+    serialStreamMode = SerialStreamMode::kNormal;
+    Serial.println(F("# Serial stream mode set to NORMAL."));
+    return true;
+  }
+  return false;
+}
+
 void handleCommand(const char* command) {
-  ++serialCommandCount;
   if (strcmp(command, "h") == 0 || strcmp(command, "H") == 0) {
     printHeader();
     return;
@@ -315,6 +363,10 @@ void handleCommand(const char* command) {
     return;
   }
 
+  if (trySetSerialStreamMode(command)) {
+    return;
+  }
+
   float calibrationAngleDeg = 0.0f;
   if (tryParsePotCalibrationAngle(command, calibrationAngleDeg)) {
     startPotCalibrationLabel(calibrationAngleDeg, millis());
@@ -323,7 +375,7 @@ void handleCommand(const char* command) {
     return;
   }
 
-  Serial.println(F("# Ignored command. Use h, z, r, x/reset, or a numeric angle label."));
+  Serial.println(F("# Ignored command. Use h, z, r, x/reset, mode normal, mode fast, or a numeric angle label."));
 }
 
 void handleSerialCommands() {
@@ -349,7 +401,6 @@ void handlePhoneCommands() {
     return;
   }
 
-  ++phoneCommandCount;
   const KneePhoneBle::CommandPacketV1 command = phoneBle.consumePendingCommand();
   switch (command.commandId) {
     case KneePhoneBle::kCmdZeroImu:
@@ -406,57 +457,48 @@ void printPotCalibrationLine(const RuntimeSnapshot& snapshot) {
   }
 }
 
-void printDebugHeartbeat(const RuntimeSnapshot& snapshot) {
-  Serial.print(F("# HEARTBEAT,"));
+void printFlexCalibrationLine(const RuntimeSnapshot& snapshot) {
+  Serial.print(F("FLEX_SAMPLE,"));
   Serial.print(millis());
-  Serial.print(F(",phase="));
-  Serial.print(currentPhase);
-  Serial.print(F(",ble="));
-  Serial.print(bleCentral.stateText());
-  Serial.print(F(",pkt_age="));
-  Serial.print(bleCentral.hasPacket() ? bleCentral.packetAgeMs() : 0UL);
-  Serial.print(F(",master="));
+  Serial.print(F(","));
+  Serial.print(snapshot.flexRawAdc);
+  Serial.print(F(","));
+  Serial.print(flexSensor.reading().filteredAdc, 2);
+  Serial.print(F(","));
+  Serial.print(flexSensor.reading().voltage, 4);
+  Serial.print(F(","));
+  if (flexSensor.reading().valid) {
+    Serial.print(flexSensor.reading().resistanceOhms, 2);
+  } else {
+    Serial.print(F("nan"));
+  }
+  Serial.print(F(","));
+  Serial.print(snapshot.flexAngleDeg, 2);
+  Serial.print(F(","));
+  if (potCalibrationLabelActive) {
+    Serial.println(potCalibrationLabelDeg, 1);
+  } else {
+    Serial.println(F("nan"));
+  }
+}
+
+void printImuCalibrationLine(const RuntimeSnapshot& snapshot) {
+  Serial.print(F("IMU_SAMPLE,"));
+  Serial.print(millis());
+  Serial.print(F(","));
   Serial.print(snapshot.masterImuDeg, 2);
-  Serial.print(F(",slave="));
+  Serial.print(F(","));
   Serial.print(snapshot.slaveImuDeg, 2);
-  Serial.print(F(",knee="));
+  Serial.print(F(","));
   Serial.print(snapshot.kneeImuDeg, 2);
-  Serial.print(F(",fused="));
-  Serial.print(snapshot.fusedKneeDeg, 2);
-  Serial.print(F(",w_imu="));
-  Serial.print(snapshot.fusedImuWeight, 3);
-  Serial.print(F(",w_flex="));
-  Serial.print(snapshot.fusedFlexWeight, 3);
-  Serial.print(F(",w_pot="));
-  Serial.print(snapshot.fusedPotWeight, 3);
-  Serial.print(F(",loops="));
-  Serial.print(loopCount);
-  Serial.print(F(",cen="));
-  Serial.print(centralPollCount);
-  Serial.print(F(",phn="));
-  Serial.print(phonePollCount);
-  Serial.print(F(",imu="));
-  Serial.print(imuUpdateCount);
-  Serial.print(F(",adc="));
-  Serial.print(analogUpdateCount);
-  Serial.print(F(",dash="));
-  Serial.print(dashboardPrintCount);
-  Serial.print(F(",oled="));
-  Serial.print(oledRenderCount);
-  Serial.print(F(",oled_rec="));
-  Serial.print(oledRecoverCount);
-  Serial.print(F(",oled_to="));
-  Serial.print(oledTimeoutCount);
-  Serial.print(F(",tx_beg="));
-  Serial.print(phoneTxBeginCount);
-  Serial.print(F(",tx_end="));
-  Serial.print(phoneTxEndCount);
-  Serial.print(F(",tx_fail="));
-  Serial.print(phoneTxFailCount);
-  Serial.print(F(",ser_cmd="));
-  Serial.print(serialCommandCount);
-  Serial.print(F(",phn_cmd="));
-  Serial.println(phoneCommandCount);
+  Serial.print(F(","));
+  Serial.print(snapshot.kneeImuDeg, 2);
+  Serial.print(F(","));
+  if (potCalibrationLabelActive) {
+    Serial.println(potCalibrationLabelDeg, 1);
+  } else {
+    Serial.println(F("nan"));
+  }
 }
 
 KneePhoneBle::TelemetryPacketV1 makePhoneTelemetryPacket(const RuntimeSnapshot& snapshot) {
@@ -536,21 +578,15 @@ void setup() {
   }
 
   printHeader();
-  if (Serial) {
-    Serial.println(F("# Debug heartbeat enabled."));
-  }
 }
 
 void loop() {
-  ++loopCount;
   const uint32_t nowMs = millis();
 
   setPhase("CEN");
   bleCentral.poll();
-  ++centralPollCount;
   setPhase("PHN");
   phoneBle.poll();
-  ++phonePollCount;
   setPhase("WDOG");
   updateConnectionWatchdog(nowMs);
   updatePotCalibrationLabel(nowMs);
@@ -563,7 +599,6 @@ void loop() {
     setPhase("IMU");
     lastImuSampleMs = nowMs;
     thighImu.update();
-    ++imuUpdateCount;
   }
 
   if (nowMs - lastAnalogSampleMs >= MasterConfig::kAnalogSampleIntervalMs) {
@@ -571,24 +606,30 @@ void loop() {
     lastAnalogSampleMs = nowMs;
     flexSensor.update();
     potSensor.update();
-    ++analogUpdateCount;
   }
 
   setPhase("SNAP");
   const RuntimeSnapshot snapshot = makeSnapshot();
 
-  if (nowMs - lastDashboardMs >= MasterConfig::kDashboardIntervalMs) {
+  if (nowMs - lastDashboardMs >= currentDashboardIntervalMs()) {
     setPhase("DASH");
     lastDashboardMs = nowMs;
-    printSimpleLine(snapshot);
-    printPotCalibrationLine(snapshot);
-    ++dashboardPrintCount;
-  }
-
-  if (nowMs - lastDebugHeartbeatMs >= MasterConfig::kDebugHeartbeatIntervalMs) {
-    setPhase("HBT");
-    lastDebugHeartbeatMs = nowMs;
-    printDebugHeartbeat(snapshot);
+    switch (serialStreamMode) {
+      case SerialStreamMode::kPotCalibration:
+        printPotCalibrationLine(snapshot);
+        break;
+      case SerialStreamMode::kFlexCalibration:
+        printFlexCalibrationLine(snapshot);
+        break;
+      case SerialStreamMode::kImuCalibration:
+        printImuCalibrationLine(snapshot);
+        break;
+      case SerialStreamMode::kRuntime:
+      case SerialStreamMode::kNormal:
+      default:
+        printSimpleLine(snapshot);
+        break;
+    }
   }
 
   if (nowMs - lastPhoneTelemetryMs >= MasterConfig::kPhoneTelemetryIntervalMs) {
@@ -596,22 +637,7 @@ void loop() {
     lastPhoneTelemetryMs = nowMs;
     const KneePhoneBle::TelemetryPacketV1 telemetry = makePhoneTelemetryPacket(snapshot);
     const KneePhoneBle::StatusPacketV1 status = makePhoneStatusPacket(telemetry.sequence);
-    ++phoneTxBeginCount;
-    Serial.print(F("# DBG,TX_BEGIN,"));
-    Serial.print(nowMs);
-    Serial.print(F(","));
-    Serial.println(telemetry.sequence);
-    const bool txOk = phoneBle.updateTelemetry(telemetry, status);
-    ++phoneTxEndCount;
-    if (!txOk) {
-      ++phoneTxFailCount;
-    }
-    Serial.print(F("# DBG,TX_END,"));
-    Serial.print(millis());
-    Serial.print(F(","));
-    Serial.print(telemetry.sequence);
-    Serial.print(F(","));
-    Serial.println(txOk ? F("OK") : F("FAIL"));
+    phoneBle.updateTelemetry(telemetry, status);
   }
 
   if (nowMs - lastOledUpdateMs >= MasterConfig::kOledUpdateIntervalMs) {
@@ -624,12 +650,9 @@ void loop() {
                                             phoneBle.isPhoneConnected(),
                                             bleCentral.stateText(),
                                             currentPhase});
-    ++oledRenderCount;
     if (!oledOk) {
-      ++oledTimeoutCount;
       Serial.println(F("# OLED render timeout/failure detected."));
       if (oledDisplay.recoverFromTimeout()) {
-        ++oledRecoverCount;
         Serial.println(F("# OLED recovered after timeout."));
       } else {
         Serial.println(F("# OLED recovery failed; continuing without display."));

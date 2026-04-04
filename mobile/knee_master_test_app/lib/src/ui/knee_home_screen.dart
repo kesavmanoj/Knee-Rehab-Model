@@ -7,8 +7,104 @@ import '../ble/knee_ble_contract.dart';
 import '../ble/knee_ble_controller.dart';
 import '../ble/knee_telemetry.dart';
 
+enum RehabExercise {
+  heelSlides,
+  seatedKneeFlexion,
+  quadSets,
+  straightLegRaises,
+}
+
+enum _RepDetectionMode {
+  flexionReturn,
+  extensionRelease,
+}
+
+class _ExerciseProfile {
+  const _ExerciseProfile({
+    required this.label,
+    required this.subtitle,
+    required this.targetMinDeg,
+    required this.targetMaxDeg,
+    required this.armThresholdDeg,
+    required this.holdThresholdDeg,
+    required this.releaseThresholdDeg,
+    required this.minHoldDuration,
+    required this.minApproachSpeedDegPerSec,
+    required this.minReleaseSpeedDegPerSec,
+    required this.mode,
+  });
+
+  final String label;
+  final String subtitle;
+  final double targetMinDeg;
+  final double targetMaxDeg;
+  final double armThresholdDeg;
+  final double holdThresholdDeg;
+  final double releaseThresholdDeg;
+  final Duration minHoldDuration;
+  final double minApproachSpeedDegPerSec;
+  final double minReleaseSpeedDegPerSec;
+  final _RepDetectionMode mode;
+}
+
+const Map<RehabExercise, _ExerciseProfile> _exerciseProfiles = {
+  RehabExercise.heelSlides: _ExerciseProfile(
+    label: 'Heel Slides',
+    subtitle: 'Bend the knee smoothly, pause at flexion, then return toward extension.',
+    targetMinDeg: 10.0,
+    targetMaxDeg: 95.0,
+    armThresholdDeg: 35.0,
+    holdThresholdDeg: 45.0,
+    releaseThresholdDeg: 20.0,
+    minHoldDuration: Duration(milliseconds: 350),
+    minApproachSpeedDegPerSec: 6.0,
+    minReleaseSpeedDegPerSec: 6.0,
+    mode: _RepDetectionMode.flexionReturn,
+  ),
+  RehabExercise.seatedKneeFlexion: _ExerciseProfile(
+    label: 'Seated Knee Flexion',
+    subtitle: 'Drive to a deeper bend, hold briefly, and return under control.',
+    targetMinDeg: 20.0,
+    targetMaxDeg: 115.0,
+    armThresholdDeg: 60.0,
+    holdThresholdDeg: 75.0,
+    releaseThresholdDeg: 30.0,
+    minHoldDuration: Duration(milliseconds: 500),
+    minApproachSpeedDegPerSec: 6.0,
+    minReleaseSpeedDegPerSec: 6.0,
+    mode: _RepDetectionMode.flexionReturn,
+  ),
+  RehabExercise.quadSets: _ExerciseProfile(
+    label: 'Quad Sets',
+    subtitle: 'Straighten the knee fully, hold the squeeze, then relax.',
+    targetMinDeg: 0.0,
+    targetMaxDeg: 12.0,
+    armThresholdDeg: 12.0,
+    holdThresholdDeg: 6.0,
+    releaseThresholdDeg: 16.0,
+    minHoldDuration: Duration(milliseconds: 800),
+    minApproachSpeedDegPerSec: 4.0,
+    minReleaseSpeedDegPerSec: 3.0,
+    mode: _RepDetectionMode.extensionRelease,
+  ),
+  RehabExercise.straightLegRaises: _ExerciseProfile(
+    label: 'Straight-Leg Raises',
+    subtitle: 'Keep the knee straight, hold the extension, then relax back down.',
+    targetMinDeg: 0.0,
+    targetMaxDeg: 15.0,
+    armThresholdDeg: 14.0,
+    holdThresholdDeg: 8.0,
+    releaseThresholdDeg: 18.0,
+    minHoldDuration: Duration(milliseconds: 900),
+    minApproachSpeedDegPerSec: 4.0,
+    minReleaseSpeedDegPerSec: 3.0,
+    mode: _RepDetectionMode.extensionRelease,
+  ),
+};
+
 class SessionSummary {
   const SessionSummary({
+    required this.exercise,
     required this.startedAt,
     required this.endedAt,
     required this.peakFlexionDeg,
@@ -16,6 +112,7 @@ class SessionSummary {
     required this.repCount,
   });
 
+  final RehabExercise exercise;
   final DateTime startedAt;
   final DateTime endedAt;
   final double peakFlexionDeg;
@@ -33,19 +130,23 @@ class KneeHomeScreen extends StatefulWidget {
 }
 
 class _KneeHomeScreenState extends State<KneeHomeScreen> {
-  static const double _targetRangeMinDeg = 10.0;
-  static const double _targetRangeMaxDeg = 110.0;
   static const double _nearLimitBufferDeg = 10.0;
 
   late final KneeBleController _controller;
 
   int _selectedIndex = 0;
+  RehabExercise _selectedExercise = RehabExercise.heelSlides;
   bool _sessionActive = false;
   DateTime? _sessionStartedAt;
   double _sessionPeakFlexionDeg = 0.0;
   double _sessionMinAngleDeg = 145.0;
   int _sessionRepCount = 0;
   bool _repArmed = false;
+  bool _holdSatisfied = false;
+  DateTime? _holdStartedAt;
+  DateTime? _lastRepSampleAt;
+  double? _lastRepSampleAngleDeg;
+  double _lastAngularSpeedDegPerSec = 0.0;
   final List<SessionSummary> _completedSessions = <SessionSummary>[];
 
   @override
@@ -68,10 +169,24 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
       return;
     }
 
+    final profile = _selectedProfile;
+    final sampleTime = DateTime.now();
     final angle = _controller.currentAngleDeg;
     if (angle == null) {
       return;
     }
+
+    final previousAt = _lastRepSampleAt;
+    final previousAngle = _lastRepSampleAngleDeg;
+    if (previousAt != null && previousAngle != null) {
+      final dtMs = sampleTime.difference(previousAt).inMilliseconds;
+      if (dtMs > 0) {
+        final dtSeconds = dtMs / 1000.0;
+        _lastAngularSpeedDegPerSec = (angle - previousAngle) / dtSeconds;
+      }
+    }
+    _lastRepSampleAt = sampleTime;
+    _lastRepSampleAngleDeg = angle;
 
     var changed = false;
     if (angle > _sessionPeakFlexionDeg) {
@@ -83,13 +198,73 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
       changed = true;
     }
 
-    if (!_repArmed && angle >= 40.0) {
-      _repArmed = true;
-      changed = true;
-    } else if (_repArmed && angle <= 20.0) {
-      _repArmed = false;
-      _sessionRepCount += 1;
-      changed = true;
+    switch (profile.mode) {
+      case _RepDetectionMode.flexionReturn:
+        if (!_repArmed &&
+            angle >= profile.armThresholdDeg &&
+            _lastAngularSpeedDegPerSec >= profile.minApproachSpeedDegPerSec) {
+          _repArmed = true;
+          _holdStartedAt = null;
+          _holdSatisfied = false;
+          changed = true;
+        }
+
+        if (_repArmed) {
+          if (angle >= profile.holdThresholdDeg) {
+            _holdStartedAt ??= sampleTime;
+            if (!_holdSatisfied &&
+                sampleTime.difference(_holdStartedAt!) >= profile.minHoldDuration) {
+              _holdSatisfied = true;
+              changed = true;
+            }
+          } else if (!_holdSatisfied) {
+            _holdStartedAt = null;
+          }
+
+          if (_holdSatisfied &&
+              angle <= profile.releaseThresholdDeg &&
+              _lastAngularSpeedDegPerSec <= -profile.minReleaseSpeedDegPerSec) {
+            _sessionRepCount += 1;
+            _repArmed = false;
+            _holdStartedAt = null;
+            _holdSatisfied = false;
+            changed = true;
+          }
+        }
+        break;
+      case _RepDetectionMode.extensionRelease:
+        if (!_repArmed &&
+            angle <= profile.armThresholdDeg &&
+            _lastAngularSpeedDegPerSec <= -profile.minApproachSpeedDegPerSec) {
+          _repArmed = true;
+          _holdStartedAt = null;
+          _holdSatisfied = false;
+          changed = true;
+        }
+
+        if (_repArmed) {
+          if (angle <= profile.holdThresholdDeg) {
+            _holdStartedAt ??= sampleTime;
+            if (!_holdSatisfied &&
+                sampleTime.difference(_holdStartedAt!) >= profile.minHoldDuration) {
+              _holdSatisfied = true;
+              changed = true;
+            }
+          } else if (!_holdSatisfied) {
+            _holdStartedAt = null;
+          }
+
+          if (_holdSatisfied &&
+              angle >= profile.releaseThresholdDeg &&
+              _lastAngularSpeedDegPerSec >= profile.minReleaseSpeedDegPerSec) {
+            _sessionRepCount += 1;
+            _repArmed = false;
+            _holdStartedAt = null;
+            _holdSatisfied = false;
+            changed = true;
+          }
+        }
+        break;
     }
 
     if (changed && mounted) {
@@ -140,62 +315,38 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
   }
 
   Widget _buildHomePage(BuildContext context) {
-    final feedback = _feedbackPresentation;
-
     return ListView(
       padding: const EdgeInsets.all(16),
       children: <Widget>[
-        _HeroAngleCard(
-          angleDeg: _controller.currentAngleDeg,
-          connectionSummary: _controller.connectionSummary,
-          deviceName: _controller.connectedDeviceName ?? KneeBleContract.deviceName,
-          telemetryFresh: _controller.hasFreshTelemetry,
-          feedback: feedback,
-        ),
-        const SizedBox(height: 16),
         _SectionCard(
-          title: 'Exercise Target',
+          title: 'Find KneeMaster',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              _FeedbackBanner(
-                title: feedback.title,
-                message: feedback.message,
-                color: feedback.color,
-              ),
-              const SizedBox(height: 12),
               Wrap(
                 spacing: 12,
                 runSpacing: 12,
-                children: const <Widget>[
-                  _MetricTile(label: 'Target Range', value: '10-110 deg'),
-                  _MetricTile(label: 'Near Limit', value: 'Within 10 deg'),
+                children: <Widget>[
+                  FilledButton.icon(
+                    onPressed: _controller.isScanning ? _controller.stopScan : _controller.startScan,
+                    icon: Icon(
+                      _controller.isScanning ? Icons.stop_circle : Icons.bluetooth_searching,
+                    ),
+                    label: Text(_controller.isScanning ? 'Stop Scan' : 'Scan for Devices'),
+                  ),
+                  if (_controller.isConnected || _controller.isConnecting)
+                    OutlinedButton.icon(
+                      onPressed: _controller.disconnect,
+                      icon: const Icon(Icons.link_off),
+                      label: const Text('Disconnect'),
+                    ),
                 ],
               ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        _SectionCard(
-          title: 'Quick Actions',
-          child: Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: <Widget>[
-              FilledButton.icon(
-                onPressed: _controller.canSendCommands ? _controller.sendZeroImu : null,
-                icon: const Icon(Icons.exposure_zero),
-                label: const Text('Zero Leg'),
-              ),
-              FilledButton.icon(
-                onPressed: _controller.canSendCommands ? _startSession : null,
-                icon: const Icon(Icons.play_arrow),
-                label: Text(_sessionActive ? 'Session Running' : 'Start Session'),
-              ),
-              OutlinedButton.icon(
-                onPressed: _controller.isConnected || _controller.isConnecting ? _controller.disconnect : null,
-                icon: const Icon(Icons.link_off),
-                label: const Text('Disconnect'),
+              const SizedBox(height: 12),
+              _buildDeviceList(
+                emptyMessage: _controller.isScanning
+                    ? 'Searching for KneeMaster devices nearby...'
+                    : 'Tap Scan for Devices to look for KneeMaster.',
               ),
             ],
           ),
@@ -216,8 +367,35 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
         ),
         const SizedBox(height: 16),
         _SectionCard(
-          title: 'Available Devices',
-          child: _buildDeviceList(emptyMessage: 'Tap Scan to search for KneeMaster.'),
+          title: 'Quick Actions',
+          child: Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: <Widget>[
+              FilledButton.icon(
+                onPressed: _controller.canSendCommands ? _controller.sendZeroImu : null,
+                icon: const Icon(Icons.exposure_zero),
+                label: const Text('Zero Leg'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _controller.canSendCommands ? _controller.sendClearZero : null,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reset Zero'),
+              ),
+              FilledButton.icon(
+                onPressed: _controller.canSendCommands && !_sessionActive ? _startSession : null,
+                icon: const Icon(Icons.play_arrow),
+                label: Text(_sessionActive ? 'Session Running' : 'Start Session'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _HeroAngleCard(
+          angleDeg: _controller.currentAngleDeg,
+          connectionSummary: _controller.connectionSummary,
+          deviceName: _controller.connectedDeviceName ?? KneeBleContract.deviceName,
+          telemetryFresh: _controller.hasFreshTelemetry,
         ),
         if (_controller.lastError != null) ...<Widget>[
           const SizedBox(height: 16),
@@ -229,6 +407,7 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
 
   Widget _buildLiveSessionPage(BuildContext context) {
     final feedback = _feedbackPresentation;
+    final profile = _selectedProfile;
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -238,12 +417,71 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
+              _SectionCard(
+                title: 'Exercise Plan',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    DropdownButtonFormField<RehabExercise>(
+                      initialValue: _selectedExercise,
+                      decoration: const InputDecoration(
+                        labelText: 'Exercise',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: RehabExercise.values
+                          .map(
+                            (exercise) => DropdownMenuItem<RehabExercise>(
+                              value: exercise,
+                              child: Text(_exerciseProfiles[exercise]!.label),
+                            ),
+                          )
+                          .toList(growable: false),
+                      onChanged: _sessionActive
+                          ? null
+                          : (exercise) {
+                              if (exercise == null) {
+                                return;
+                              }
+                              setState(() {
+                                _selectedExercise = exercise;
+                                _resetRepTracking();
+                              });
+                            },
+                    ),
+                    const SizedBox(height: 12),
+                    _FeedbackBanner(
+                      title: feedback.title,
+                      message: feedback.message,
+                      color: feedback.color,
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: <Widget>[
+                        _MetricTile(
+                          label: 'Target Range',
+                          value:
+                              '${profile.targetMinDeg.toStringAsFixed(0)}-${profile.targetMaxDeg.toStringAsFixed(0)} deg',
+                        ),
+                        const _MetricTile(label: 'Near Limit', value: 'Within 10 deg'),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      profile.subtitle,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
               SizedBox(
-                height: 320,
+                height: 360,
                 child: _AngleGaugeCard(
                   angleDeg: _controller.currentAngleDeg,
-                  targetMinDeg: _targetRangeMinDeg,
-                  targetMaxDeg: _targetRangeMaxDeg,
+                  targetMinDeg: profile.targetMinDeg,
+                  targetMaxDeg: profile.targetMaxDeg,
                   feedback: feedback,
                 ),
               ),
@@ -267,6 +505,14 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
                     label: 'Extension Lag',
                     value: '${_sessionExtensionLagDeg.toStringAsFixed(1)} deg',
                   ),
+                  _MetricTile(
+                    label: 'Hold',
+                    value: '${profile.minHoldDuration.inMilliseconds} ms',
+                  ),
+                  _MetricTile(
+                    label: 'Speed',
+                    value: '${_lastAngularSpeedDegPerSec.toStringAsFixed(1)} deg/s',
+                  ),
                   _MetricTile(label: 'Reps', value: _sessionRepCount.toString()),
                   _MetricTile(label: 'Duration', value: _sessionDurationLabel),
                 ],
@@ -276,8 +522,8 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
                 height: 260,
                 child: _AngleTrendCard(
                   samples: _controller.recentAngles,
-                  targetBandMinDeg: _targetRangeMinDeg,
-                  targetBandMaxDeg: _targetRangeMaxDeg,
+                  targetBandMinDeg: profile.targetMinDeg,
+                  targetBandMaxDeg: profile.targetMaxDeg,
                 ),
               ),
               const SizedBox(height: 16),
@@ -301,6 +547,11 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
                     onPressed: _controller.canSendCommands ? _controller.sendZeroImu : null,
                     icon: const Icon(Icons.exposure_zero),
                     label: const Text('Zero'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _controller.canSendCommands ? _controller.sendClearZero : null,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Reset Zero'),
                   ),
                 ],
               ),
@@ -341,7 +592,8 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
                           leading: const CircleAvatar(child: Icon(Icons.directions_walk)),
                           title: Text(_sessionTitle(session)),
                           subtitle: Text(
-                            'Peak flexion ${session.peakFlexionDeg.toStringAsFixed(1)} deg'
+                            '${_exerciseProfiles[session.exercise]!.label}'
+                            ' | Peak flexion ${session.peakFlexionDeg.toStringAsFixed(1)} deg'
                             ' | Extension lag ${session.extensionLagDeg.toStringAsFixed(1)} deg'
                             ' | Reps ${session.repCount}',
                           ),
@@ -428,7 +680,7 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
       _sessionPeakFlexionDeg = 0.0;
       _sessionMinAngleDeg = 145.0;
       _sessionRepCount = 0;
-      _repArmed = false;
+      _resetRepTracking();
       _selectedIndex = 1;
     });
   }
@@ -437,6 +689,7 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
     final startedAt = _sessionStartedAt;
     if (startedAt != null) {
       final summary = SessionSummary(
+        exercise: _selectedExercise,
         startedAt: startedAt,
         endedAt: DateTime.now(),
         peakFlexionDeg: _sessionPeakFlexionDeg,
@@ -451,7 +704,7 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
     setState(() {
       _sessionActive = false;
       _sessionStartedAt = null;
-      _repArmed = false;
+      _resetRepTracking();
       _selectedIndex = 2;
     });
   }
@@ -492,7 +745,7 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
     final minute = started.minute.toString().padLeft(2, '0');
     final day = started.day.toString().padLeft(2, '0');
     final month = started.month.toString().padLeft(2, '0');
-    return 'Session $day/$month at $hour:$minute';
+    return '${_exerciseProfiles[session.exercise]!.label} • $day/$month at $hour:$minute';
   }
 
   String _durationLabel(Duration duration) {
@@ -531,6 +784,7 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
 
   _FeedbackPresentation get _feedbackPresentation {
     final angle = _controller.currentAngleDeg;
+    final profile = _selectedProfile;
 
     if (_controller.isConnecting) {
       return const _FeedbackPresentation(
@@ -560,15 +814,15 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
         color: Color(0xFFD97706),
       );
     }
-    if (angle < _targetRangeMinDeg || angle > _targetRangeMaxDeg) {
+    if (angle < profile.targetMinDeg || angle > profile.targetMaxDeg) {
       return const _FeedbackPresentation(
         title: 'Outside target range',
         message: 'Adjust your movement to bring the knee back inside the prescribed range.',
         color: Color(0xFFDC2626),
       );
     }
-    final nearLower = angle <= _targetRangeMinDeg + _nearLimitBufferDeg;
-    final nearUpper = angle >= _targetRangeMaxDeg - _nearLimitBufferDeg;
+    final nearLower = angle <= profile.targetMinDeg + _nearLimitBufferDeg;
+    final nearUpper = angle >= profile.targetMaxDeg - _nearLimitBufferDeg;
     if (nearLower || nearUpper) {
       return const _FeedbackPresentation(
         title: 'Near target limit',
@@ -582,6 +836,17 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
       color: Color(0xFF15803D),
     );
   }
+
+  _ExerciseProfile get _selectedProfile => _exerciseProfiles[_selectedExercise]!;
+
+  void _resetRepTracking() {
+    _repArmed = false;
+    _holdSatisfied = false;
+    _holdStartedAt = null;
+    _lastRepSampleAt = null;
+    _lastRepSampleAngleDeg = null;
+    _lastAngularSpeedDegPerSec = 0.0;
+  }
 }
 
 class _HeroAngleCard extends StatelessWidget {
@@ -590,14 +855,12 @@ class _HeroAngleCard extends StatelessWidget {
     required this.connectionSummary,
     required this.deviceName,
     required this.telemetryFresh,
-    required this.feedback,
   });
 
   final double? angleDeg;
   final String connectionSummary;
   final String deviceName;
   final bool telemetryFresh;
-  final _FeedbackPresentation feedback;
 
   @override
   Widget build(BuildContext context) {
@@ -625,8 +888,8 @@ class _HeroAngleCard extends StatelessWidget {
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 12),
-            Text(
-              angleDeg == null ? '--' : '${angleDeg!.toStringAsFixed(1)} deg',
+            _AnimatedAngleText(
+              angleDeg: angleDeg,
               style: Theme.of(context).textTheme.displayMedium?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 12),
@@ -638,13 +901,6 @@ class _HeroAngleCard extends StatelessWidget {
                 Chip(label: Text(deviceName)),
                 Chip(label: Text(telemetryFresh ? 'Live data' : 'Waiting for telemetry')),
               ],
-            ),
-            const SizedBox(height: 12),
-            _FeedbackBanner(
-              title: feedback.title,
-              message: feedback.message,
-              color: feedback.color,
-              compact: true,
             ),
           ],
         ),
@@ -762,24 +1018,22 @@ class _FeedbackBanner extends StatelessWidget {
     required this.title,
     required this.message,
     required this.color,
-    this.compact = false,
   });
 
   final String title;
   final String message;
   final Color color;
-  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: color.withValues(alpha: compact ? 0.10 : 0.12),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: color.withValues(alpha: 0.28)),
       ),
       child: Padding(
-        padding: EdgeInsets.all(compact ? 12 : 14),
+        padding: const EdgeInsets.all(14),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
@@ -833,43 +1087,65 @@ class _AngleGaugeCard extends StatelessWidget {
         color: const Color(0xFF0F172A),
         borderRadius: BorderRadius.circular(24),
       ),
-      child: CustomPaint(
-        painter: _AngleGaugePainter(
-          angleDeg: angleDeg,
-          targetMinDeg: targetMinDeg,
-          targetMaxDeg: targetMaxDeg,
-          accentColor: feedback.color,
-          textStyle: Theme.of(context).textTheme,
-        ),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 24, 24, 18),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: <Widget>[
-              Text(
-                feedback.title,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
-                    ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                angleDeg == null ? '--' : '${angleDeg!.toStringAsFixed(1)} deg',
-                style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w800,
-                    ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Target range ${targetMinDeg.toStringAsFixed(0)}-${targetMaxDeg.toStringAsFixed(0)} deg',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Colors.white70,
-                    ),
-              ),
-            ],
-          ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            TweenAnimationBuilder<double>(
+              tween: Tween<double>(begin: angleDeg ?? 0.0, end: angleDeg ?? 0.0),
+              duration: const Duration(milliseconds: 140),
+              curve: Curves.easeOutCubic,
+              builder: (context, animatedAngle, _) {
+                return Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      Text(
+                        feedback.title,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                      const SizedBox(height: 6),
+                      _AnimatedAngleText(
+                        angleDeg: angleDeg == null ? null : animatedAngle,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.displaySmall?.copyWith(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Gauge scale 0-180 deg  •  Target ${targetMinDeg.toStringAsFixed(0)}-${targetMaxDeg.toStringAsFixed(0)} deg',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: Colors.white70,
+                            ),
+                      ),
+                      const SizedBox(height: 16),
+                      Expanded(
+                        child: RepaintBoundary(
+                          child: CustomPaint(
+                            painter: _AngleGaugePainter(
+                              angleDeg: angleDeg == null ? null : animatedAngle,
+                              targetMinDeg: targetMinDeg,
+                              targetMaxDeg: targetMaxDeg,
+                              accentColor: feedback.color,
+                              textStyle: Theme.of(context).textTheme,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ],
         ),
       ),
     );
@@ -904,15 +1180,49 @@ class _AngleTrendCard extends StatelessWidget {
                   style: TextStyle(color: Colors.white70),
                 ),
               )
-            : CustomPaint(
-                painter: _AngleTrendPainter(
-                  samples: samples,
-                  targetBandMinDeg: targetBandMinDeg,
-                  targetBandMaxDeg: targetBandMaxDeg,
+            : RepaintBoundary(
+                child: CustomPaint(
+                  painter: _AngleTrendPainter(
+                    samples: samples,
+                    targetBandMinDeg: targetBandMinDeg,
+                    targetBandMaxDeg: targetBandMaxDeg,
+                  ),
+                  size: Size.infinite,
                 ),
-                size: Size.infinite,
               ),
       ),
+    );
+  }
+}
+
+class _AnimatedAngleText extends StatelessWidget {
+  const _AnimatedAngleText({
+    required this.angleDeg,
+    required this.style,
+    this.textAlign,
+  });
+
+  final double? angleDeg;
+  final TextStyle? style;
+  final TextAlign? textAlign;
+
+  @override
+  Widget build(BuildContext context) {
+    if (angleDeg == null) {
+      return Text('--', textAlign: textAlign, style: style);
+    }
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: angleDeg!, end: angleDeg!),
+      duration: const Duration(milliseconds: 120),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, _) {
+        return Text(
+          '${value.toStringAsFixed(1)} deg',
+          textAlign: textAlign,
+          style: style,
+        );
+      },
     );
   }
 }
@@ -933,13 +1243,15 @@ class _AngleGaugePainter extends CustomPainter {
   final TextTheme textStyle;
 
   static const double _minAngle = 0.0;
-  static const double _maxAngle = 145.0;
+  static const double _maxAngle = 180.0;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height * 0.84);
-    final radius = size.width < size.height ? size.width * 0.34 : size.height * 0.34;
-    final strokeWidth = 18.0;
+    final horizontalPadding = 8.0;
+    final availableWidth = size.width - (horizontalPadding * 2);
+    final radius = math.min(availableWidth / 2, size.height * 0.82);
+    final center = Offset(size.width / 2, size.height - 10);
+    final strokeWidth = 20.0;
     const startAngle = 3.141592653589793;
     const sweepAngle = 3.141592653589793;
 
@@ -977,16 +1289,16 @@ class _AngleGaugePainter extends CustomPainter {
 
       final theta = startAngle + valueSweep;
       final needleEnd = Offset(
-        center.dx + radius * 0.84 * math.cos(theta),
-        center.dy + radius * 0.84 * math.sin(theta),
+        center.dx + radius * 0.78 * math.cos(theta),
+        center.dy + radius * 0.78 * math.sin(theta),
       );
       canvas.drawLine(center, needleEnd, needlePaint);
       canvas.drawCircle(center, 8, Paint()..color = Colors.white);
     }
 
-    _paintTickLabel(canvas, '0', Offset(center.dx - radius - 4, center.dy - 8));
-    _paintTickLabel(canvas, '72', Offset(center.dx - 12, center.dy - radius - 20));
-    _paintTickLabel(canvas, '145', Offset(center.dx + radius - 22, center.dy - 8));
+    _paintTickLabel(canvas, '0', Offset(center.dx - radius - 4, center.dy - 20));
+    _paintTickLabel(canvas, '90', Offset(center.dx - 12, center.dy - radius - 24));
+    _paintTickLabel(canvas, '180', Offset(center.dx + radius - 28, center.dy - 20));
   }
 
   double _angleToSweep(double angle) {
@@ -1073,17 +1385,30 @@ class _AngleTrendPainter extends CustomPainter {
     final endMs = samples.last.uptimeMs;
     final spanMs = (endMs - startMs).clamp(1, 1 << 30);
 
-    final path = Path();
-    for (int i = 0; i < samples.length; i++) {
-      final sample = samples[i];
+    final points = <Offset>[];
+    for (final sample in samples) {
       final x = rect.left + (((sample.uptimeMs - startMs) / spanMs) * rect.width);
       final clamped = sample.angleDeg.clamp(0.0, 145.0);
       final y = rect.bottom - ((clamped / 145.0) * rect.height);
-      if (i == 0) {
-        path.moveTo(x, y);
-      } else {
-        path.lineTo(x, y);
+      points.add(Offset(x, y));
+    }
+
+    final path = Path();
+    path.moveTo(points.first.dx, points.first.dy);
+    if (points.length == 2) {
+      path.lineTo(points.last.dx, points.last.dy);
+    } else {
+      for (int i = 0; i < points.length - 1; i++) {
+        final current = points[i];
+        final next = points[i + 1];
+        final mid = Offset((current.dx + next.dx) / 2, (current.dy + next.dy) / 2);
+        if (i == 0) {
+          path.quadraticBezierTo(current.dx, current.dy, mid.dx, mid.dy);
+        } else {
+          path.quadraticBezierTo(current.dx, current.dy, mid.dx, mid.dy);
+        }
       }
+      path.lineTo(points.last.dx, points.last.dy);
     }
 
     canvas.drawPath(path, tracePaint);

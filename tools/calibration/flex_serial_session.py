@@ -53,6 +53,7 @@ class FlexSerialSession:
         self.writer = FlexCsvSessionWriter(self.session_dir)
         self.serial_port = serial.Serial(self.port, baudrate=self.baud, timeout=0.2)
         time.sleep(2.0)
+        self.send_command("stream flex")
 
         self._stop_event.clear()
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
@@ -65,6 +66,11 @@ class FlexSerialSession:
         self._stop_event.set()
         if self._reader_thread is not None:
             self._reader_thread.join(timeout=2.0)
+        if self.serial_port is not None and self.serial_port.is_open:
+            try:
+                self.send_command("stream normal")
+            except Exception:
+                pass
         if self.writer is not None:
             self.writer.close()
         if self.serial_port is not None and self.serial_port.is_open:

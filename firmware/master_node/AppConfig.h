@@ -14,12 +14,13 @@ static constexpr unsigned long kSerialBaud = 115200UL;
 // Scheduling
 static constexpr unsigned long kImuSampleIntervalMs = 5UL;          // 200 Hz
 static constexpr unsigned long kAnalogSampleIntervalMs = 5UL;       // 200 Hz
-static constexpr unsigned long kDashboardIntervalMs = 50UL;         // 20 Hz live serial stream for the laptop monitor
+static constexpr unsigned long kDashboardIntervalNormalMs = 250UL;  // readable Serial Monitor mode
+static constexpr unsigned long kDashboardIntervalFastMs = 50UL;     // fast laptop-monitor mode
 static constexpr unsigned long kOledUpdateIntervalMs = 500UL;       // 2 Hz
 static constexpr unsigned long kBleRetryIntervalMs = 1000UL;        // reconnect pacing
 static constexpr unsigned long kBlePacketTimeoutMs = 1000UL;        // stale-data timeout
-static constexpr unsigned long kPhoneTelemetryIntervalMs = 50UL;    // 20 Hz phone refresh with the smaller final-angle payload
-static constexpr unsigned long kDebugHeartbeatIntervalMs = 1000UL;  // once-per-second loop health report
+static constexpr unsigned long kPhoneTelemetryIntervalMs = 75UL;    // ~13 Hz phone refresh for smoother live motion without overloading commands
+static constexpr unsigned long kPhoneStatusIntervalMs = 500UL;      // slower status refresh; status rarely changes
 static constexpr unsigned long kPotCalibrationCaptureWindowMs = 3000UL;  // label the next 3 s of POT samples after a numeric angle command
 static constexpr unsigned long kConnectionStableTimeMs = 2000UL;    // require a continuously healthy slave link before clearing recovery
 static constexpr unsigned long kConnectionResetTimeoutMs = 6000UL;  // reboot if the slave link never becomes stable

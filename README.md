@@ -22,8 +22,16 @@ The current firmware is a simplified runtime build focused on:
 The master currently prints a simple serial line:
 
 ```text
-SIMPLE,time_ms,master_imu_deg,slave_imu_deg,knee_imu_deg,flex_raw_adc,flex_angle_deg,pot_raw_adc,pot_angle_deg,ble_state
+SIMPLE,time_ms,master_imu_deg,slave_imu_deg,knee_imu_deg,fused_knee_deg,flex_raw_adc,flex_angle_deg,pot_raw_adc,pot_angle_deg,ble_state
 ```
+
+The master also supports auto-switched serial stream profiles for the PC tools:
+
+- `stream runtime`
+- `stream pot`
+- `stream flex`
+- `stream imu`
+- `stream normal`
 
 ## Repo Layout
 
