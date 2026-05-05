@@ -6,6 +6,12 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import '../ble/knee_ble_contract.dart';
 import '../ble/knee_ble_controller.dart';
 import '../ble/knee_telemetry.dart';
+import '../models/exercise_session_record.dart';
+import '../models/session_angle_sample.dart';
+import '../models/session_upload_payload.dart';
+import '../models/user_profile.dart';
+import '../repositories/profile_repository.dart';
+import '../repositories/session_repository.dart';
 
 enum RehabExercise {
   heelSlides,
@@ -104,26 +110,41 @@ const Map<RehabExercise, _ExerciseProfile> _exerciseProfiles = {
 
 class SessionSummary {
   const SessionSummary({
+    required this.id,
     required this.exercise,
     required this.startedAt,
     required this.endedAt,
     required this.peakFlexionDeg,
     required this.extensionLagDeg,
     required this.repCount,
+    required this.syncState,
   });
 
+  final String id;
   final RehabExercise exercise;
   final DateTime startedAt;
   final DateTime endedAt;
   final double peakFlexionDeg;
   final double extensionLagDeg;
   final int repCount;
+  final SessionSyncState syncState;
 
   Duration get duration => endedAt.difference(startedAt);
 }
 
 class KneeHomeScreen extends StatefulWidget {
-  const KneeHomeScreen({super.key});
+  const KneeHomeScreen({
+    super.key,
+    required this.profile,
+    required this.sessionRepository,
+    required this.profileRepository,
+    required this.onLogout,
+  });
+
+  final UserProfile profile;
+  final SessionRepository sessionRepository;
+  final ProfileRepository profileRepository;
+  final Future<void> Function() onLogout;
 
   @override
   State<KneeHomeScreen> createState() => _KneeHomeScreenState();
@@ -147,7 +168,19 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
   DateTime? _lastRepSampleAt;
   double? _lastRepSampleAngleDeg;
   double _lastAngularSpeedDegPerSec = 0.0;
+  final List<SessionAngleSample> _sessionAngleSamples = <SessionAngleSample>[];
   final List<SessionSummary> _completedSessions = <SessionSummary>[];
+  final List<UserProfile> _linkedDoctors = <UserProfile>[];
+  final TextEditingController _doctorCodeController = TextEditingController();
+  DateTime? _lastStoredSessionSampleAt;
+  bool _loadingSessions = true;
+  bool _syncingSessions = false;
+  bool _loadingDoctors = false;
+  bool _linkingDoctor = false;
+  String? _sessionSyncMessage;
+  String? _sessionLoadError;
+  String? _doctorLinkMessage;
+  String? _doctorLinkError;
 
   @override
   void initState() {
@@ -155,12 +188,15 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
     _controller = KneeBleController();
     _controller.addListener(_handleControllerUpdate);
     _controller.requestPermissions();
+    _loadCloudSessions();
+    _loadLinkedDoctors();
   }
 
   @override
   void dispose() {
     _controller.removeListener(_handleControllerUpdate);
     _controller.dispose();
+    _doctorCodeController.dispose();
     super.dispose();
   }
 
@@ -187,6 +223,7 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
     }
     _lastRepSampleAt = sampleTime;
     _lastRepSampleAngleDeg = angle;
+    _captureSessionSample(sampleTime, angle);
 
     var changed = false;
     if (angle > _sessionPeakFlexionDeg) {
@@ -272,6 +309,131 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
     }
   }
 
+  Future<void> _loadCloudSessions() async {
+    setState(() {
+      _loadingSessions = true;
+      _sessionLoadError = null;
+    });
+
+    try {
+      final syncedCount = await widget.sessionRepository.retryPendingUploads();
+      final records = await widget.sessionRepository.listMySessions(widget.profile.id);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _completedSessions
+          ..clear()
+          ..addAll(records.map(_summaryFromRecord));
+        _loadingSessions = false;
+        _syncingSessions = false;
+        _sessionSyncMessage = syncedCount > 0
+            ? 'Synced $syncedCount pending session${syncedCount == 1 ? '' : 's'}.'
+            : null;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _loadingSessions = false;
+        _syncingSessions = false;
+        _sessionLoadError = 'Failed to load session history: $error';
+      });
+    }
+  }
+
+  Future<void> _loadLinkedDoctors() async {
+    setState(() {
+      _loadingDoctors = true;
+      _doctorLinkError = null;
+    });
+
+    try {
+      final doctors = await widget.profileRepository.listLinkedDoctors(widget.profile.id);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _linkedDoctors
+          ..clear()
+          ..addAll(doctors);
+        _loadingDoctors = false;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _loadingDoctors = false;
+        _doctorLinkError = 'Failed to load linked doctors: $error';
+      });
+    }
+  }
+
+  Future<void> _linkDoctorCode() async {
+    final code = _doctorCodeController.text.trim().toUpperCase();
+    if (code.isEmpty) {
+      setState(() {
+        _doctorLinkError = 'Enter the doctor code first.';
+        _doctorLinkMessage = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _linkingDoctor = true;
+      _doctorLinkError = null;
+      _doctorLinkMessage = null;
+    });
+
+    try {
+      final doctor = await widget.profileRepository.linkPatientToDoctorCode(code);
+      if (!mounted) {
+        return;
+      }
+      _doctorCodeController.clear();
+      setState(() {
+        final alreadyLinked = _linkedDoctors.any((entry) => entry.id == doctor.id);
+        if (!alreadyLinked) {
+          _linkedDoctors.insert(0, doctor);
+        }
+        _linkingDoctor = false;
+        _doctorLinkMessage = 'Linked to ${doctor.displayName}.';
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _linkingDoctor = false;
+        _doctorLinkError = 'Could not link doctor code: $error';
+      });
+    }
+  }
+
+  void _captureSessionSample(DateTime sampleTime, double angleDeg) {
+    final startedAt = _sessionStartedAt;
+    if (startedAt == null) {
+      return;
+    }
+
+    const sampleInterval = Duration(milliseconds: 200);
+    final previousAt = _lastStoredSessionSampleAt;
+    if (previousAt != null && sampleTime.difference(previousAt) < sampleInterval) {
+      return;
+    }
+
+    _lastStoredSessionSampleAt = sampleTime;
+    _sessionAngleSamples.add(
+      SessionAngleSample(
+        sampleIndex: _sessionAngleSamples.length,
+        elapsedMs: sampleTime.difference(startedAt).inMilliseconds,
+        finalAngleDeg: angleDeg,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -279,12 +441,22 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
       builder: (context, _) {
         return Scaffold(
           appBar: AppBar(
-            title: const Text('Knee Rehab Monitor'),
+            title: Text('Knee Rehab Monitor • ${widget.profile.displayName}'),
             actions: <Widget>[
               IconButton(
                 tooltip: _controller.isScanning ? 'Stop scan' : 'Start scan',
                 onPressed: _controller.isScanning ? _controller.stopScan : _controller.startScan,
                 icon: Icon(_controller.isScanning ? Icons.stop_circle : Icons.bluetooth_searching),
+              ),
+              IconButton(
+                tooltip: 'Sync sessions',
+                onPressed: _loadingSessions ? null : _loadCloudSessions,
+                icon: const Icon(Icons.cloud_sync_outlined),
+              ),
+              IconButton(
+                tooltip: 'Logout',
+                onPressed: widget.onLogout,
+                icon: const Icon(Icons.logout),
               ),
             ],
           ),
@@ -318,6 +490,26 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: <Widget>[
+        _SectionCard(
+          title: 'Welcome',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                'Welcome ${widget.profile.displayName}',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Use this app to connect to KneeMaster, run your rehab sessions, and keep your doctor updated with your completed exercise history.',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
         _SectionCard(
           title: 'Find KneeMaster',
           child: Column(
@@ -358,10 +550,105 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
             spacing: 12,
             runSpacing: 12,
             children: <Widget>[
+              _MetricTile(label: 'Role', value: widget.profile.role.name),
               _MetricTile(label: 'Connection', value: _controller.connectionSummary),
               _MetricTile(label: 'Permissions', value: _controller.permissionsGranted ? 'Granted' : 'Needed'),
               _MetricTile(label: 'Angle Feed', value: _controller.hasFreshTelemetry ? 'Live' : 'Waiting'),
               _MetricTile(label: 'Device', value: _controller.connectedDeviceName ?? 'None'),
+              _MetricTile(
+                label: 'Cloud Sync',
+                value: _syncingSessions
+                    ? 'Syncing'
+                    : _loadingSessions
+                    ? 'Loading'
+                    : (_completedSessions.any((session) => session.syncState == SessionSyncState.pendingUpload)
+                        ? 'Pending'
+                        : 'Up to date'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SectionCard(
+          title: 'Care Team',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                'Enter your doctor code to connect your account with the right clinician. Once linked, your completed exercise sessions and final knee-angle graphs are available to that doctor.',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Expanded(
+                    child: TextField(
+                      controller: _doctorCodeController,
+                      enabled: !_linkingDoctor,
+                      autocorrect: false,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: const InputDecoration(
+                        labelText: 'Doctor code',
+                        hintText: 'Enter 8-character code',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  FilledButton(
+                    onPressed: _linkingDoctor ? null : _linkDoctorCode,
+                    child: Text(_linkingDoctor ? 'Linking...' : 'Link'),
+                  ),
+                ],
+              ),
+              if (_doctorLinkMessage != null) ...<Widget>[
+                const SizedBox(height: 12),
+                _InfoCard(message: _doctorLinkMessage!),
+              ],
+              if (_doctorLinkError != null) ...<Widget>[
+                const SizedBox(height: 12),
+                _ErrorCard(error: _doctorLinkError!),
+              ],
+              const SizedBox(height: 12),
+              if (_loadingDoctors)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: <Widget>[
+                      SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(width: 10),
+                      Text('Loading linked doctors...'),
+                    ],
+                  ),
+                )
+              else if (_linkedDoctors.isEmpty)
+                const Text(
+                  'No doctor is linked yet. Ask your doctor for their code and enter it here.',
+                )
+              else
+                Column(
+                  children: _linkedDoctors
+                      .map(
+                        (doctor) => ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const CircleAvatar(
+                            child: Icon(Icons.medical_services_outlined),
+                          ),
+                          title: Text(doctor.displayName),
+                          subtitle: Text(
+                            doctor.doctorLinkCode == null
+                                ? 'Doctor account linked'
+                                : 'Code ${doctor.doctorLinkCode}',
+                          ),
+                        ),
+                      )
+                      .toList(growable: false),
+                ),
             ],
           ),
         ),
@@ -397,6 +684,14 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
           deviceName: _controller.connectedDeviceName ?? KneeBleContract.deviceName,
           telemetryFresh: _controller.hasFreshTelemetry,
         ),
+        if (_sessionSyncMessage != null) ...<Widget>[
+          const SizedBox(height: 16),
+          _InfoCard(message: _sessionSyncMessage!),
+        ],
+        if (_sessionLoadError != null) ...<Widget>[
+          const SizedBox(height: 16),
+          _ErrorCard(error: _sessionLoadError!),
+        ],
         if (_controller.lastError != null) ...<Widget>[
           const SizedBox(height: 16),
           _ErrorCard(error: _controller.lastError!),
@@ -580,6 +875,27 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
           ),
         ),
         const SizedBox(height: 16),
+        if (_loadingSessions)
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(20),
+              child: Row(
+                children: <Widget>[
+                  SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2.2),
+                  ),
+                  SizedBox(width: 12),
+                  Text('Loading cloud-backed session history...'),
+                ],
+              ),
+            ),
+          ),
+        if (_sessionLoadError != null) ...<Widget>[
+          _ErrorCard(error: _sessionLoadError!),
+          const SizedBox(height: 16),
+        ],
         _SectionCard(
           title: 'Session History',
           child: _completedSessions.isEmpty
@@ -595,7 +911,8 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
                             '${_exerciseProfiles[session.exercise]!.label}'
                             ' | Peak flexion ${session.peakFlexionDeg.toStringAsFixed(1)} deg'
                             ' | Extension lag ${session.extensionLagDeg.toStringAsFixed(1)} deg'
-                            ' | Reps ${session.repCount}',
+                            ' | Reps ${session.repCount}'
+                            ' | ${session.syncState == SessionSyncState.synced ? 'Synced' : 'Pending upload'}',
                           ),
                           trailing: Text(_durationLabel(session.duration)),
                         ),
@@ -674,31 +991,79 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
   }
 
   void _startSession() {
+    final startedAt = DateTime.now();
+    final currentAngle = _controller.currentAngleDeg;
     setState(() {
       _sessionActive = true;
-      _sessionStartedAt = DateTime.now();
+      _sessionStartedAt = startedAt;
       _sessionPeakFlexionDeg = 0.0;
       _sessionMinAngleDeg = 145.0;
       _sessionRepCount = 0;
+      _sessionAngleSamples.clear();
+      _lastStoredSessionSampleAt = null;
       _resetRepTracking();
       _selectedIndex = 1;
     });
+    if (currentAngle != null) {
+      _captureSessionSample(startedAt, currentAngle);
+    }
   }
 
-  void _finishSession() {
+  Future<void> _finishSession() async {
     final startedAt = _sessionStartedAt;
     if (startedAt != null) {
-      final summary = SessionSummary(
-        exercise: _selectedExercise,
+      final endedAt = DateTime.now();
+      final finalAngle = _controller.currentAngleDeg;
+      if (finalAngle != null) {
+        _captureSessionSample(endedAt, finalAngle);
+      }
+
+      final payload = SessionUploadPayload(
+        patientId: widget.profile.id,
         startedAt: startedAt,
-        endedAt: DateTime.now(),
+        endedAt: endedAt,
+        exerciseType: _exerciseTypeForCloud(_selectedExercise),
+        repCount: _sessionRepCount,
         peakFlexionDeg: _sessionPeakFlexionDeg,
         extensionLagDeg: _sessionExtensionLagDeg,
-        repCount: _sessionRepCount,
+        durationMs: endedAt.difference(startedAt).inMilliseconds,
+        sessionStatus: 'completed',
+        deviceName: _controller.connectedDeviceName ?? KneeBleContract.deviceName,
+        firmwareProtocolVersion: 'phone-v1',
+        samples: List<SessionAngleSample>.from(_sessionAngleSamples),
       );
+
       setState(() {
-        _completedSessions.add(summary);
+        _sessionSyncMessage = null;
+        _sessionLoadError = null;
+        _syncingSessions = true;
+        _sessionActive = false;
+        _sessionStartedAt = null;
+        _resetRepTracking();
+        _selectedIndex = 2;
       });
+      try {
+        await widget.sessionRepository.uploadCompletedSession(payload);
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _sessionSyncMessage = 'Session uploaded successfully.';
+        });
+      } catch (_) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _sessionSyncMessage =
+              'Session saved locally and marked pending upload. It will retry on the next sync.';
+        });
+      } finally {
+        if (mounted) {
+          await _loadCloudSessions();
+        }
+      }
+      return;
     }
 
     setState(() {
@@ -746,6 +1111,47 @@ class _KneeHomeScreenState extends State<KneeHomeScreen> {
     final day = started.day.toString().padLeft(2, '0');
     final month = started.month.toString().padLeft(2, '0');
     return '${_exerciseProfiles[session.exercise]!.label} • $day/$month at $hour:$minute';
+  }
+
+  SessionSummary _summaryFromRecord(ExerciseSessionRecord record) {
+    return SessionSummary(
+      id: record.id,
+      exercise: _exerciseFromCloud(record.exerciseType),
+      startedAt: record.startedAt,
+      endedAt: record.endedAt,
+      peakFlexionDeg: record.peakFlexionDeg,
+      extensionLagDeg: record.extensionLagDeg,
+      repCount: record.repCount,
+      syncState: record.syncState,
+    );
+  }
+
+  RehabExercise _exerciseFromCloud(String value) {
+    switch (value) {
+      case 'heel_slides':
+        return RehabExercise.heelSlides;
+      case 'seated_knee_flexion':
+        return RehabExercise.seatedKneeFlexion;
+      case 'quad_sets':
+        return RehabExercise.quadSets;
+      case 'straight_leg_raises':
+        return RehabExercise.straightLegRaises;
+      default:
+        return RehabExercise.heelSlides;
+    }
+  }
+
+  String _exerciseTypeForCloud(RehabExercise exercise) {
+    switch (exercise) {
+      case RehabExercise.heelSlides:
+        return 'heel_slides';
+      case RehabExercise.seatedKneeFlexion:
+        return 'seated_knee_flexion';
+      case RehabExercise.quadSets:
+        return 'quad_sets';
+      case RehabExercise.straightLegRaises:
+        return 'straight_leg_raises';
+    }
   }
 
   String _durationLabel(Duration duration) {
@@ -1004,6 +1410,37 @@ class _ErrorCard extends StatelessWidget {
               child: Text(
                 error,
                 style: const TextStyle(color: Color(0xFF7A1111)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InfoCard extends StatelessWidget {
+  const _InfoCard({
+    required this.message,
+  });
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: const Color(0xFFEAF7F6),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Icon(Icons.info_outline, color: Color(0xFF0B8F8C)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: Theme.of(context).textTheme.bodyMedium,
               ),
             ),
           ],

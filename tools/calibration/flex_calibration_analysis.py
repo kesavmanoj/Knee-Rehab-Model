@@ -7,14 +7,27 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from flex_calibration_log_parser import parse_csv_logs, parse_text_log
-from flex_serial_protocol import FlexSample, LabelEvent
+try:
+    from .calibration_curve_fitter import polyfit, polyval, rmse
+    from .flex_calibration_log_parser import parse_csv_logs, parse_text_log
+    from .flex_serial_protocol import FlexSample, LabelEvent
+except ImportError:
+    from calibration_curve_fitter import polyfit, polyval, rmse
+    from flex_calibration_log_parser import parse_csv_logs, parse_text_log
+    from flex_serial_protocol import FlexSample, LabelEvent
 
 
 @dataclass
 class FitMapping:
     slope: float
     intercept: float
+
+
+@dataclass
+class PolynomialFit:
+    degree: int
+    coefficients: list[float]
+    rmse_deg: float
 
 
 @dataclass
@@ -30,6 +43,7 @@ class LabelSummaryRow:
 class AnalysisResult:
     adc_mapping: FitMapping
     resistance_mapping: FitMapping
+    adc_polynomial_fits: list[PolynomialFit]
     label_summary: list[LabelSummaryRow]
     time_plot_path: Path
     calibration_plot_path: Path
@@ -53,6 +67,27 @@ def fit_linear_mapping(samples: list[FlexSample]) -> tuple[FitMapping, FitMappin
         FitMapping(float(resistance_slope), float(resistance_intercept)),
         labeled_samples,
     )
+
+
+def fit_adc_polynomials(samples: list[FlexSample]) -> list[PolynomialFit]:
+    labeled_samples = [sample for sample in samples if sample.label_deg is not None]
+    if len(labeled_samples) < 4:
+        raise ValueError("Need at least four labeled samples to fit 1st, 2nd, and 3rd degree polynomials.")
+
+    x_adc = [float(sample.filtered_adc) for sample in labeled_samples]
+    y_angle = [float(sample.label_deg) for sample in labeled_samples]
+
+    fits: list[PolynomialFit] = []
+    for degree in (1, 2, 3):
+        coefficients = polyfit(x_adc, y_angle, degree)
+        fits.append(
+            PolynomialFit(
+                degree=degree,
+                coefficients=coefficients,
+                rmse_deg=rmse(coefficients, x_adc, y_angle),
+            )
+        )
+    return fits
 
 
 def summarize_labels(samples: list[FlexSample]) -> list[LabelSummaryRow]:
@@ -118,7 +153,7 @@ def make_time_plot(samples: list[FlexSample], events: list[LabelEvent], output_p
     plt.close(fig)
 
 
-def make_calibration_plot(summary: list[LabelSummaryRow], mapping_adc: FitMapping, output_path: Path):
+def make_calibration_plot(summary: list[LabelSummaryRow], polynomial_fits: list[PolynomialFit], output_path: Path):
     labels = np.array([row.label_deg for row in summary], dtype=float)
     mean_adc = np.array([row.mean_adc for row in summary], dtype=float)
 
@@ -127,9 +162,23 @@ def make_calibration_plot(summary: list[LabelSummaryRow], mapping_adc: FitMappin
 
     x_min = float(np.min(mean_adc))
     x_max = float(np.max(mean_adc))
-    x_fit = np.linspace(x_min, x_max, 100)
-    y_fit = (mapping_adc.slope * x_fit) + mapping_adc.intercept
-    ax.plot(x_fit, y_fit, color="black", linewidth=1.5, label="Linear fit")
+    x_fit = np.linspace(x_min, x_max, 200)
+
+    fit_colours = {
+        1: "black",
+        2: "tab:blue",
+        3: "tab:green",
+    }
+
+    for fit in polynomial_fits:
+        y_fit = np.array([polyval(fit.coefficients, x_value) for x_value in x_fit], dtype=float)
+        ax.plot(
+            x_fit,
+            y_fit,
+            color=fit_colours.get(fit.degree, "tab:gray"),
+            linewidth=1.8,
+            label=f"{fit.degree} degree fit (RMSE {fit.rmse_deg:.2f})",
+        )
 
     ax.set_title("Flex Sensor ADC to Knee Angle Mapping")
     ax.set_xlabel("Filtered ADC")
@@ -148,8 +197,15 @@ def write_summary_text(result: AnalysisResult):
         "Linear mapping using resistance:",
         f"  knee_angle_deg = ({result.resistance_mapping.slope:.8f} * resistance_ohms) + ({result.resistance_mapping.intercept:.8f})",
         "",
-        "Per-label summary:",
+        "ADC polynomial fits:",
     ]
+    for fit in result.adc_polynomial_fits:
+        coefficients_text = ", ".join(f"{coefficient:.12f}" for coefficient in fit.coefficients)
+        lines.append(f"  degree {fit.degree}: coeffs [{coefficients_text}] | rmse = {fit.rmse_deg:.6f} deg")
+    lines.extend([
+        "",
+        "Per-label summary:",
+    ])
     for row in result.label_summary:
         resistance_text = "nan" if row.mean_resistance_ohms is None else f"{row.mean_resistance_ohms:9.2f}"
         lines.append(
@@ -163,6 +219,7 @@ def analyze_samples_and_events(samples: list[FlexSample], events: list[LabelEven
     output_dir.mkdir(parents=True, exist_ok=True)
 
     adc_mapping, resistance_mapping, labeled_samples = fit_linear_mapping(samples)
+    adc_polynomial_fits = fit_adc_polynomials(samples)
     label_summary = summarize_labels(labeled_samples)
 
     time_plot_path = output_dir / "flex_vs_time.png"
@@ -170,11 +227,12 @@ def analyze_samples_and_events(samples: list[FlexSample], events: list[LabelEven
     summary_text_path = output_dir / "fit_summary.txt"
 
     make_time_plot(samples, events, time_plot_path)
-    make_calibration_plot(label_summary, adc_mapping, calibration_plot_path)
+    make_calibration_plot(label_summary, adc_polynomial_fits, calibration_plot_path)
 
     result = AnalysisResult(
         adc_mapping=adc_mapping,
         resistance_mapping=resistance_mapping,
+        adc_polynomial_fits=adc_polynomial_fits,
         label_summary=label_summary,
         time_plot_path=time_plot_path,
         calibration_plot_path=calibration_plot_path,

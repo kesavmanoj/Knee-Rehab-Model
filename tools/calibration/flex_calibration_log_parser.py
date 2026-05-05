@@ -3,7 +3,10 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from flex_serial_protocol import FlexSample, LabelEvent, parse_serial_line
+try:
+    from .flex_serial_protocol import FlexSample, LabelEvent, parse_serial_line
+except ImportError:
+    from flex_serial_protocol import FlexSample, LabelEvent, parse_serial_line
 
 
 def parse_text_log(log_path: str | Path) -> tuple[list[FlexSample], list[LabelEvent]]:

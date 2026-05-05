@@ -1,0 +1,16 @@
+-- Create the auth users first using Supabase Auth or the dashboard invite flow.
+-- When inviting or creating them, set user metadata like:
+-- { "role": "doctor", "display_name": "Dr. Demo" }
+-- { "role": "patient", "display_name": "Patient Demo" }
+--
+-- The trigger in the main migration will automatically create matching rows in
+-- public.profiles. After both users have logged in once, link them here.
+
+-- Replace these UUIDs with the real auth user IDs from your Supabase project.
+-- Example:
+-- insert into public.doctor_patient_links (doctor_id, patient_id)
+-- values (
+--   '00000000-0000-0000-0000-000000000001',
+--   '00000000-0000-0000-0000-000000000002'
+-- )
+-- on conflict do nothing;

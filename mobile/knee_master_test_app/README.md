@@ -1,92 +1,98 @@
-# KneeMaster BLE Test App
+# Knee Rehab Mobile App
 
-This is a small Flutter app for Phase 3 phone testing.
+This Flutter app now has two roles in one mobile client:
 
-It is intentionally narrow in scope:
+- `patient`
+- `doctor`
 
-- scan for `KneeMaster`
-- connect to the master board
-- subscribe to `Telemetry`
-- subscribe/read `Status`
-- show live values for IMU, flex, and potentiometer
-- write `Zero IMU` and `Clear Zero` commands
+Patients use the live BLE device workflow:
 
-## BLE Contract
+- log in
+- connect to `KneeMaster`
+- run exercise sessions
+- upload session summaries and fused-angle graph samples
+- review their own progress history
 
-This app targets the UUIDs defined in:
+Doctors use the same app to:
 
-- [PHONE_APP_BLE_SPEC.md](c:/Users/KESAV/Downloads/Knee-Rehab-Model/PHONE_APP_BLE_SPEC.md)
-- [PhoneBleProtocol.h](c:/Users/KESAV/Downloads/Knee-Rehab-Model/firmware/master_node/PhoneBleProtocol.h)
+- log in
+- see only assigned patients
+- open patient session history
+- review per-session summary metrics
+- view stored fused-angle motion graphs
 
-## App Structure
+## Backend Requirements
 
-- `lib/src/ble/knee_ble_contract.dart`
-  - service and characteristic UUIDs plus friendly names
-- `lib/src/ble/knee_command.dart`
-  - command enum and binary packet builder
-- `lib/src/ble/knee_telemetry.dart`
-  - telemetry and status packet parsers
-- `lib/src/ble/ble_permissions.dart`
-  - Android BLE permission requests
-- `lib/src/ble/knee_ble_controller.dart`
-  - scan, connect, subscribe, read, and write command logic
-- `lib/src/ui/knee_home_screen.dart`
-  - test UI for live values and command buttons
+This app now depends on Supabase for:
 
-## First-Time Setup
+- authentication
+- role resolution
+- doctor-patient access control
+- session storage
+- fused-angle graph storage
 
-1. Install Flutter on your PC and make sure `flutter` is on your `PATH`.
-2. Install Android Studio or at least the Android SDK and platform tools.
-3. On your phone:
-   - enable Developer Options
-   - enable USB debugging
-   - connect by USB and accept the debugging prompt
-4. In this app folder, run:
+See:
+
+- `supabase/README.md`
+
+## Runtime Configuration
+
+Run the app with:
 
 ```powershell
-flutter create --platforms=android .
-flutter pub get
-flutter devices
-flutter run
+flutter run --dart-define=SUPABASE_URL=your-project-url --dart-define=SUPABASE_ANON_KEY=your-anon-key
 ```
 
-`flutter create --platforms=android .` is important the first time because this repo only stores the custom app source and Android manifest/activity pieces we care about. Flutter will generate the remaining Android project files around them.
+If those values are missing, the app will stop at a configuration screen instead of booting into BLE mode.
 
-## Quick Run From Repo Root
+## Current Architecture
 
-You can also use:
+### Patient Flow
 
-- [run_flutter_knee_master_test_app.bat](c:/Users/KESAV/Downloads/Knee-Rehab-Model/launchers/run_flutter_knee_master_test_app.bat)
+The patient shell still contains:
 
-That launcher runs:
+- Home
+- Live
+- Progress
+- Debug
 
-1. `flutter create --platforms=android .`
-2. `flutter pub get`
-3. `flutter run`
+The BLE connection remains patient-only. Patients connect to the master board, receive the final knee angle, and use that for:
 
-from the app folder.
+- live display
+- rep counting
+- session metrics
+- session graph capture
 
-## What To Expect In The UI
+At session end, the app uploads:
 
-- connection card showing BLE and permissions state
-- scan results list for `KneeMaster`
-- live telemetry cards:
-  - master IMU
-  - slave IMU
-  - IMU knee angle
-  - flex raw ADC
-  - flex angle
-  - POT raw ADC
-  - POT angle
-- command buttons:
-  - `Zero IMU`
-  - `Clear Zero`
+- exercise metadata
+- rep count
+- peak flexion
+- extension lag
+- duration
+- fused/final angle graph samples only
 
-## Next Phase
+No raw ADC and no separate sensor-angle channels are uploaded.
 
-Once this test app is stable, the next good steps are:
+### Doctor Flow
 
-- add graphs
-- add reconnect polish
-- add packet-rate and stale-data indicators
-- separate a cleaner clinician/patient UI from the low-level test screen
+The doctor shell is read-only in v1.
+
+Doctors can:
+
+- see assigned patients
+- open patient session history
+- review session metrics
+- review stored fused-angle motion graphs
+
+Doctors cannot yet:
+
+- edit exercise plans
+- write notes
+- manage patients
+
+## Local Retry Queue
+
+If a patient finishes a session while cloud upload fails, the app stores that session locally as a pending upload and retries it later when the patient logs in again or triggers sync.
+
+This keeps the live rehab workflow usable even if the backend is temporarily unavailable.
